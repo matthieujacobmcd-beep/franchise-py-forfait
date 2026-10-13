@@ -472,7 +472,7 @@ function employeeView(ctx){
   S.verCtx = { uid:ctx.uid, doc:ctx.doc };
   return `<div class="grid2">
     <div class="stack">${summaryCard(sum, al, m)}${interviewCard(ctx.hr)}${monthsChart(sum)}${historyCard(S.history[ctx.uid])}</div>
-    <div class="stack">${calendarCard(ctx)}${validationCard(ctx)}</div></div>`;
+    <div class="stack">${calendarCard(ctx)}${validationCard(ctx)}${downloadCard()}</div></div>`;
 }
 
 
@@ -559,7 +559,7 @@ function teamView(){
     <div class="kpi"><b>${k.al}</b><span>Avec alertes de suivi</span></div></div>
   ${S.adding ? addPanel() : ''}
   <section class="card"><div class="row between"><h2>Équipe · cycle ${cycLabel(cyc())}</h2>
-    <span class="row"><button class="btn small" data-act="export" ${rows.length?'':'disabled'}>Exporter en CSV</button><button class="btn small primary" data-act="add-open">Ajouter un collaborateur</button></span></div>
+    <span class="row"><button class="btn small" data-act="export" ${rows.length?'':'disabled'}>Exporter en Excel</button><button class="btn small primary" data-act="add-open">Ajouter un collaborateur</button></span></div>
   <div class="filters">
     <div class="field"><label for="f-q">Recherche</label><input type="search" id="f-q" data-filter="fQ" value="${esc(S.fQ)}" placeholder="Nom ou restaurant"></div>
     <div class="field"><label for="f-rest">Restaurant</label><select id="f-rest" data-filter="fRest"><option value="">Tous</option>${rests.map(r => `<option ${S.fRest===r?'selected':''}>${esc(r)}</option>`).join('')}</select></div>
@@ -677,19 +677,146 @@ function render(){
 }
 
 
+// ---------- fichier Excel (.xlsx) généré dans le navigateur, sans bibliothèque externe
+const CRC = (() => { const t = new Uint32Array(256); for(let n=0;n<256;n++){ let c = n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320 ^ (c>>>1) : c>>>1; t[n] = c>>>0; } return t; })();
+const crc32 = u8 => { let c = 0xFFFFFFFF; for(let i=0;i<u8.length;i++) c = CRC[(c ^ u8[i]) & 255] ^ (c>>>8); return (c ^ 0xFFFFFFFF)>>>0; };
+function zipStore(files){
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  const u16 = n => [n&255, (n>>8)&255], u32 = n => [n&255, (n>>8)&255, (n>>16)&255, (n>>>24)&255];
+  for(const f of files){
+    const name = enc.encode(f.name), data = enc.encode(f.data), crc = crc32(data);
+    const head = new Uint8Array([0x50,0x4b,3,4, ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)]);
+    parts.push(head, name, data);
+    central.push(new Uint8Array([0x50,0x4b,1,2, ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), name);
+    off += head.length + name.length + data.length;
+  }
+  const cdSize = central.reduce((a,b) => a + b.length, 0);
+  const end = new Uint8Array([0x50,0x4b,5,6, 0,0,0,0, ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(off), 0,0]);
+  return new Blob([...parts, ...central, end], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+const xe = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
+const colName = i => { let n = '', k = i+1; while(k>0){ const m = (k-1)%26; n = String.fromCharCode(65+m) + n; k = Math.floor((k-1)/26); } return n; };
+function sheetXml(rows, widths){
+  const body = rows.map((r,ri) => `<row r="${ri+1}">` + r.map((v,ci) => {
+    const ref = colName(ci) + (ri+1), st = ri===0 ? ' s="1"' : '';
+    if(typeof v === 'number' && isFinite(v)) return `<c r="${ref}"${st}><v>${v}</v></c>`;
+    if(v === null || v === undefined || v === '') return '';
+    return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xe(v)}</t></is></c>`;
+  }).join('') + '</row>').join('');
+  const cols = widths ? `<cols>${widths.map((w,i) => `<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${cols}<sheetData>${body}</sheetData></worksheet>`;
+}
+function makeXlsx(sheets){
+  const files = [
+    { name:'[Content_Types].xml', data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i) => `<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
+    { name:'_rels/.rels', data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+    { name:'xl/workbook.xml', data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sh,i) => `<sheet name="${xe(sh.name).slice(0,31)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>` },
+    { name:'xl/_rels/workbook.xml.rels', data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i) => `<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name:'xl/styles.xml', data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>` },
+    ...sheets.map((sh,i) => ({ name:`xl/worksheets/sheet${i+1}.xml`, data:sheetXml(sh.rows, sh.widths) }))
+  ];
+  return zipStore(files);
+}
+function saveBlob(name, blob){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+// ---------- relevés (PDF via impression, Excel)
+const DOWL = ['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'];
+function downloadCard(){
+  const mo = cycleMonths(cyc())[S.mi];
+  return `<section class="card" aria-labelledby="dl-h"><h3 id="dl-h">Télécharger</h3>
+    <p class="muted" style="margin:6px 0 10px">Relevé des jours saisis. Le PDF s'obtient avec « Enregistrer au format PDF » dans la fenêtre d'impression.</p>
+    <div class="row">
+      <button class="btn small" data-act="dl" data-v="month-pdf">${MONTHS[mo.m]} · PDF</button>
+      <button class="btn small" data-act="dl" data-v="month-xlsx">${MONTHS[mo.m]} · Excel</button>
+      <button class="btn small" data-act="dl" data-v="cycle-pdf">Cycle ${cycLabel(cyc())} · PDF</button>
+      <button class="btn small" data-act="dl" data-v="cycle-xlsx">Cycle ${cycLabel(cyc())} · Excel</button>
+    </div></section>`;
+}
+const monthDays = mo => Array.from({length:new Date(mo.y,mo.m+1,0).getDate()}, (_,i) => new Date(mo.y,mo.m,i+1));
+const slug = t => String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'');
+function dayRowsX(hr, doc, days){
+  const hol = holidays(cyc()), rows = [['Collaborateur','Date','Jour','Prévu','Réel','Retenu','Jour férié']];
+  for(const d of days){
+    const iso = toIso(d), p = doc.prev[iso]||'', r = doc.reel[iso]||'';
+    rows.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], p, r, r||p, hol[iso]||'']);
+  }
+  return rows;
+}
+function recapRowsX(hr, doc){
+  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), m = metrics(sum, al), hol = holidays(c);
+  const rows = [['Mois', ...CODES.map(x => x.k), 'Fériés travaillés', 'Non planifiés', 'Validation']];
+  for(const mo of cycleMonths(c)){
+    const t = {}; let blank = 0, jfw = 0;
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    const rec = doc.months[mo.ym] || {};
+    rows.push([`${MONTHS[mo.m]} ${mo.y}`, ...CODES.map(x => t[x.k]||0), jfw, blank, rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '']);
+  }
+  rows.push([]);
+  rows.push(['Collaborateur', hr.nom]); rows.push(['Cycle', cycLabel(c)]);
+  rows.push(['Jours réalisés (plafond)', sum.real]); rows.push(['Projection du cycle', sum.proj]); rows.push(['Plafond', al.plafond]);
+  rows.push(['Marge (−) / excédent', -m.reste]);
+  rows.push(['CP planifiés', sum.cp]); rows.push(['CP à prendre', al.cp]); rows.push(['RTT planifiés', sum.rtt]); rows.push(['RTT à prendre', al.rtt]);
+  rows.push(['Fériés travaillés déduits', sum.jfw]);
+  return rows;
+}
+function reportHead(hr, title, sub){
+  return `<div class="rpt"><h1>Franchise PY · ${esc(title)}</h1>
+    <p><b>${esc(hr.nom)}</b>${hr.fonction ? ' · '+esc(hr.fonction) : ''}${hr.restaurant ? ' · '+esc(hr.restaurant) : ''}${hr.n1 ? ' · N+1 : '+esc(hr.n1) : ''}<br>${esc(sub)}<br><small>Édité le ${fmtDate(todayIso())}</small></p>`;
+}
+function reportMonth(uid, doc, hr){
+  const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), rec = doc.months[mo.ym] || {};
+  const rows = monthDays(mo).map(d => { const iso = toIso(d), p = doc.prev[iso]||'', r = doc.reel[iso]||'';
+    return `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${p||'—'}</td><td>${r||'—'}</td><td>${esc(hol[iso]||'')}</td></tr>`; }).join('');
+  const tally = {}; for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(e) tally[e] = (tally[e]||0)+1; }
+  const sig = rec.valide
+    ? `<p>Mois validé et signé électroniquement par <b>${esc(rec.sig && rec.sig.name || hr.nom)}</b>${rec.at ? ' le '+fmtDate(rec.at.slice(0,10)) : ''}. ${rec.visa ? 'Visé par '+esc(rec.visa.name||'la DRH')+(rec.visa.at ? ' le '+fmtDate(rec.visa.at.slice(0,10)) : '')+'.' : 'Non visé.'}</p>
+       <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>${rec.hash ? `<p><small>Empreinte SHA-256 : ${esc(rec.hash)}</small></p>` : ''}`
+    : `<p>Mois non validé.</p>`;
+  return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
+    `<table><thead><tr><th>Date</th><th>Jour</th><th>Prévu</th><th>Réel</th><th>Observation</th></tr></thead><tbody>${rows}</tbody></table>
+    <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}</p>${sig}
+    <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
+}
+function reportCycle(uid, doc, hr){
+  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), m = metrics(sum, al), ms = cycleMonths(c), hol = holidays(c);
+  const rows = ms.map(mo => { const t = {}; let blank = 0, jfw = 0;
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    const rec = doc.months[mo.ym] || {};
+    return `<tr><td>${MONTHS[mo.m]} ${mo.y}</td>${CODES.map(x => `<td>${t[x.k]||0}</td>`).join('')}<td>${jfw}</td><td>${blank}</td><td>${rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '—'}</td></tr>`; }).join('');
+  return reportHead(hr, `Relevé du cycle ${cycLabel(c)}`, `Forfait annuel en jours · juin ${c} → mai ${c+1}`) +
+    `<table><thead><tr><th>Mois</th>${CODES.map(x => `<th>${x.k}</th>`).join('')}<th>Fériés trav.</th><th>Non planifiés</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
+    <p><b>Jours retenus pour le plafond :</b> réalisés ${nf(sum.real)} · projection du cycle ${nf(sum.proj)} sur ${al.plafond} (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} jour(s)).<br>
+    <b>Quotas :</b> CP ${sum.cp} / ${al.cp} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
+    <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p></div>`;
+}
+function printReport(html){
+  const root = document.getElementById('print-root'); root.innerHTML = html; document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); root.innerHTML = ''; window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done); window.print();
+}
+function runDownload(kind){
+  const t = (S.tab==='team' && S.viewUid) ? { uid:S.viewUid, doc:S.allDocs[S.viewUid] || emptyCycle(), hr:S.hr[S.viewUid] } : { uid:S.uid, doc:S.myCycle, hr:S.myHr };
+  if(!t.hr) return;
+  const c = cyc(), mo = cycleMonths(c)[S.mi], base = `forfait-jours-${slug(t.hr.nom)}`;
+  if(kind==='month-pdf') printReport(reportMonth(t.uid, t.doc, t.hr));
+  else if(kind==='cycle-pdf') printReport(reportCycle(t.uid, t.doc, t.hr));
+  else if(kind==='month-xlsx') saveBlob(`${base}-${mo.ym}.xlsx`, makeXlsx([{ name:'Jours', rows:dayRowsX(t.hr, t.doc, monthDays(mo)), widths:[26,22,14,8,8,9,24] }]));
+  else if(kind==='cycle-xlsx') saveBlob(`${base}-${cycLabel(c)}.xlsx`, makeXlsx([{ name:'Récapitulatif', rows:recapRowsX(t.hr, t.doc), widths:[28,12,8,8,8,8,8,8,18,14,16] }, { name:'Jours', rows:dayRowsX(t.hr, t.doc, [...cycleDays(c)]), widths:[26,22,14,8,8,9,24] }]));
+}
+
 // ---------- actions
 let toastTimer;
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),4200); }
 const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
 function exportCsv(){
-  const head = ['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection du cycle','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Entretien'];
-  const lines = [head.map(csvCell).join(';')];
+  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection du cycle','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Entretien']];
   for(const r of teamRows().rows){
-    lines.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?nf(r.sum.real):'', r.started?nf(r.sum.proj):'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.iv.label].map(csvCell).join(';'));
+    rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.sum.proj:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.iv.label]);
   }
-  const blob = new Blob(['﻿'+lines.join('\r\n')], { type:'text/csv;charset=utf-8' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `forfait-jours-${cycLabel(cyc())}.csv`;
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  saveBlob(`forfait-jours-equipe-${cycLabel(cyc())}.xlsx`, makeXlsx([{ name:'Équipe', rows, widths:[26,30,24,12,18,18,9,14,18,13,13,13,13,10,16,28,13,16,16] }]));
 }
 function defaultFor(d, hol){ const iso = toIso(d); return hol[iso] ? 'JF' : (d.getDay()===0||d.getDay()===6) ? 'OFF' : 'JT'; }
 async function changeCycle(c){
@@ -838,6 +965,7 @@ $app.addEventListener('click', ev => {
     const row = { id:1, cycle:n('set-cycle')||curCycle(), plafond:n('set-plafond')||DEF.plafond, cp:n('set-cp'), rtt:n('set-rtt'), preavis:n('set-preavis'), arret_compte:document.getElementById('set-arret').value==='1' };
     enqueue(async () => { await dbDo(sb.from('parametres').upsert(row)); await loadSettings(); render(); toast('Réglages enregistrés.'); });
   }
+  else if(act==='dl') runDownload(v);
   else if(act==='export') exportCsv();
 });
 $app.addEventListener('keydown', ev => { if((ev.key==='Enter'||ev.key===' ') && ev.target.matches('tr[data-act="open"]')){ ev.preventDefault(); ev.target.click(); } });
