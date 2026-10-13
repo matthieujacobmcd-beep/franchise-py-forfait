@@ -10,9 +10,13 @@ const CODES = [
   { k:'CP',  label:'Congé payé' },
   { k:'JF',  label:'Jour férié' },
   { k:'AM',  label:'Arrêt maladie' },
-  { k:'AT',  label:'Accident du travail' }
+  { k:'AT',  label:'Accident du travail' },
+  { k:'ABS', label:'Absence', view:true }   // affiché uniquement aux profils de consultation (AM/AT masqués)
 ];
+const ARR = new Set(['AM','AT','ABS']);   // absences médicales : comptées dans le plafond selon le réglage
+const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Superviseur (consultation des directeurs)', lecteur:'Lecteur (consultation de tous les plannings)' };
 const CODE = Object.fromEntries(CODES.map(c => [c.k, c]));
+const REAL_CODES = CODES.filter(x => !x.view);
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const MSHORT = ['Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sep','Oct','Nov','Déc'];
 const DOW = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
@@ -21,7 +25,7 @@ const DOW = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
 
 const CFG = window.FRANCHISE_CONFIG || {};
 const S = {
-  session:null, meRow:null, me:null, uid:null, isAdmin:false, canWrite:true,
+  role:'employe', consult:false, hasOwn:true, consultIds:new Set(), session:null, meRow:null, me:null, uid:null, isAdmin:false, canWrite:true,
   settings:{...DEF}, cycle:DEF.cycle, myHr:null, hr:{}, allDocs:{}, history:{},
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
@@ -81,21 +85,22 @@ function summarize(doc, c){
   const prev = doc.prev||{}, reel = doc.reel||{}, months = doc.months||{};
   const ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
   const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0) };
-  const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0 };
-  let blank=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0;
+  const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0, ABS:0 };
+  let blank=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0;
   const hol = holidays(c);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '';
-    if(!e){ blank++; last=null; streak=0; continue; }
+    if(!e){ blank++; last=null; streak=0; rttRun=0; continue; }
     n[e]++;
+    if(e==='RTT'){ rttRun++; maxRtt = Math.max(maxRtt, rttRun); } else if(e!=='OFF' && e!=='JF'){ rttRun = 0; }
     const i = idx[iso.slice(0,7)];
     if(per[e] && e!=='JT') per[e][i]++;
     const worked = e==='JT', ferie = !!hol[iso];
     if(worked && ferie) jfw++;
     // Un férié travaillé est payé et ne compte pas dans le plafond : il se déduit comme s'il n'avait pas été travaillé.
-    const counts = (worked && !ferie) || (S.settings.arretCompte && (r==='AM' || r==='AT'));
+    const counts = (worked && !ferie) || (S.settings.arretCompte && ARR.has(r));
     if(counts){ proj++; per.JT[i]++; }
-    if((r==='JT' && !ferie) || (S.settings.arretCompte && (r==='AM' || r==='AT'))) real++;
+    if((r==='JT' && !ferie) || (S.settings.arretCompte && ARR.has(r))) real++;
     if(e==='JT'){ streak = (last && dayDiff(last,iso)===1) ? streak+1 : 1; last = iso; max = Math.max(max,streak); }
     else { last=null; streak=0; }
   }
@@ -105,18 +110,33 @@ function summarize(doc, c){
     validated.push(ym);
     if(m.r11===false || m.r35===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
-  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, maxStreak:max, per, validated:validated.sort(), issues:issues.sort() };
+  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
 }
 function alloc(hr){
   const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {};
   return { plafond:a.plafond || (hr&&hr.plafond) || S.settings.plafond, cp:a.cp ?? S.settings.cp, rtt:a.rtt ?? S.settings.rtt };
 }
-function metrics(sum, al){
+// Projection du cycle complet : jours planifiés (réel, sinon prévu) + jours non planifiés estimés (lundi-vendredi travaillés, week-ends OFF, fériés JF).
+// CP restants : 1 CP (jours ouvrables) = 5/6 de jour travaillé en moins. RTT restants : 1 RTT = 1 jour travaillé en moins ; 2 RTT consécutifs maximum par prise.
+function projectCycle(doc, c, al, sum){
+  const prev = doc.prev||{}, reel = doc.reel||{}, hol = holidays(c), ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
+  let planned = 0, est = 0; const perP = Array(12).fill(0), perE = Array(12).fill(0);
+  for(const d of cycleDays(c)){
+    const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '', i = idx[iso.slice(0,7)];
+    if(e){ if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; } }
+    else if(defaultFor(d, hol)==='JT'){ est++; perE[i]++; }
+  }
+  const cpLeft = Math.max(0, al.cp - sum.cp), rttLeft = Math.max(0, al.rtt - sum.rtt), cpDays = Math.round(cpLeft*5/6);
+  const base = planned + est, noRtt = Math.max(0, base - cpDays), withRtt = Math.max(0, noRtt - rttLeft);
+  return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE };
+}
+function metrics(sum, al, pj){
+  const p = pj ? pj.noRtt : sum.proj;
   let status='ok';
   if(sum.real>al.plafond) status='dep';
-  else if(sum.proj>al.plafond) status='risk';
+  else if(p>al.plafond) status='risk';
   else if(sum.blank>0 || sum.cp!==al.cp || sum.rtt!==al.rtt) status='watch';
-  return { status, reste:al.plafond-sum.proj, toRest:Math.max(0,sum.proj-al.plafond) };
+  return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
 const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Non démarré' };
 function lateMonths(validated, c){
@@ -214,7 +234,7 @@ async function fetchPages(make){
 function buildDocs(jours, vals){
   const docs = {}, get = id => docs[id] || (docs[id] = emptyCycle());
   for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; }
-  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, charge:v.charge, comment:v.commentaire||'', at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
+  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, charge:v.charge, comment:v.commentaire||'', reopened:v.reouvert_le, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
   return docs;
 }
 function buildHr(rows, quotas){
@@ -239,13 +259,27 @@ async function loadData(){
     for(const x of [cols, qs, vals]) if(x.error) throw x.error;
     S.hr = buildHr(cols.data, qs.data); S.allDocs = buildDocs(jours, vals.data);
   } else {
-    const [qs, jours, vals] = await Promise.all([
-      sb.from('quotas').select('*').eq('collaborateur_id', S.uid),
-      fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
-      sb.from('validations').select('*').eq('collaborateur_id', S.uid).gte('mois',m0).lte('mois',m1)
-    ]);
-    for(const x of [qs, vals]) if(x.error) throw x.error;
-    S.hr = buildHr([S.meRow], qs.data); S.allDocs = buildDocs(jours, vals.data);
+    let hr = {}, docs = {};
+    if(S.hasOwn){
+      const [qs, jours, vals] = await Promise.all([
+        sb.from('quotas').select('*').eq('collaborateur_id', S.uid),
+        fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
+        sb.from('validations').select('*').eq('collaborateur_id', S.uid).gte('mois',m0).lte('mois',m1)
+      ]);
+      for(const x of [qs, vals]) if(x.error) throw x.error;
+      hr = buildHr([S.meRow], qs.data); docs = buildDocs(jours, vals.data);
+    }
+    if(S.consult){
+      const [cols, qs2] = await Promise.all([ sb.rpc('consultation_collaborateurs'), sb.rpc('consultation_quotas') ]);
+      const jours2 = await fetchPages(() => sb.rpc('consultation_jours', { d1:from, d2:to }).order('collaborateur_id').order('jour'));
+      for(const x of [cols, qs2]) if(x.error) throw x.error;
+      const rows = cols.data.map(r => ({ ...r, email:null, role:'employe', actif:true, entretien:null }));
+      const hr2 = buildHr(rows, qs2.data), docs2 = buildDocs(jours2, []);
+      S.consultIds = new Set(rows.map(r => r.id));
+      for(const id of Object.keys(hr2)) if(!hr[id]) hr[id] = hr2[id];
+      for(const id of Object.keys(docs2)) if(!docs[id]) docs[id] = docs2[id];
+    }
+    S.hr = hr; S.allDocs = docs;
   }
   S.myHr = S.hr[S.uid] || null; S.myCycle = S.allDocs[S.uid] || emptyCycle(); S.dataAt = Date.now();
 }
@@ -267,13 +301,20 @@ function enqueue(fn){
 async function upsertChunks(table, rows, onConflict){
   for(let i=0; i<rows.length; i+=500){ const { error } = await sb.from(table).upsert(rows.slice(i,i+500), { onConflict }); if(error) throw error; }
 }
+function tgt(){ return (S.isAdmin && S.tab==='team' && S.viewUid) ? { uid:S.viewUid, admin:true } : { uid:S.uid, admin:false }; }
 function setCodes(layer, map){
-  const clean = {}; for(const [d,c] of Object.entries(map)) clean[d] = c || '';
-  S.myCycle = { ...S.myCycle, [layer]:{ ...S.myCycle[layer], ...clean } };
-  S.allDocs[S.uid] = S.myCycle;
+  const T = tgt(), clean = {}; for(const [d,c] of Object.entries(map)) clean[d] = c || '';
+  const cur = S.allDocs[T.uid] || emptyCycle();
+  const touched = new Set(Object.keys(clean).map(d => d.slice(0,7)));
+  const wasValidated = T.admin && [...touched].some(ym => cur.months[ym] && cur.months[ym].valide);
+  const next = { ...cur, [layer]:{ ...cur[layer], ...clean } };
+  S.allDocs[T.uid] = next; if(T.uid===S.uid) S.myCycle = next;
   render();
   const col = layer==='prev' ? 'prevu' : 'reel';
-  enqueue(() => upsertChunks('jours', Object.entries(clean).map(([jour,c]) => ({ collaborateur_id:S.uid, jour, [col]: c || null })), 'collaborateur_id,jour'));
+  enqueue(async () => {
+    await upsertChunks('jours', Object.entries(clean).map(([jour,c]) => ({ collaborateur_id:T.uid, jour, [col]: c || null })), 'collaborateur_id,jour');
+    if(T.admin){ await loadData(); render(); if(wasValidated) toast('Validation du mois annulée : le collaborateur devra revalider.'); }
+  });
 }
 async function dbDo(q){ const { error } = await q; if(error) throw error; }
 
@@ -287,11 +328,11 @@ async function startSession(){
   const { data:me, error } = await sb.from('collaborateurs').select('*').eq('user_id', session.user.id).maybeSingle();
   if(error){ S.fatal = 'error'; S.loading = false; render(); return; }
   if(!me || !me.actif){ S.session = session; S.fatal = 'unregistered'; S.loading = false; render(); return; }
-  S.session = session; S.meRow = me; S.uid = me.id; S.isAdmin = me.role === 'admin'; S.me = { name:me.nom, email:me.email };
+  S.session = session; S.meRow = me; S.uid = me.id; S.role = me.role; S.isAdmin = me.role === 'admin'; S.consult = me.role === 'superviseur' || me.role === 'lecteur'; S.hasOwn = me.role !== 'lecteur'; S.me = { name:me.nom, email:me.email };
   await loadSettings(); S.cycle = S.settings.cycle; S.mi = defaultMonthIndex(S.cycle);
   await loadData();
-  S.tab = S.isAdmin ? 'team' : 'me'; S.loading = false; render();
-  loadHistory(S.uid).then(safeRender).catch(() => {});
+  S.tab = (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
+  if(S.hasOwn) loadHistory(S.uid).then(safeRender).catch(() => {});
   bumpIdle();
 }
 async function logout(){ try { await sb.auth.signOut(); } finally { location.reload(); } }
@@ -331,8 +372,10 @@ function cycleOptions(){
 
 function header(){
   const c = cyc();
-  const tabs = [['me','Mon suivi']];
-  if(S.isAdmin) tabs.push(['team','Équipe'],['settings','Réglages']);
+  const tabs = [];
+  if(S.hasOwn) tabs.push(['me','Mon suivi']);
+  if(S.isAdmin || S.consult) tabs.push(['team', S.role==='superviseur' ? 'Directeurs' : 'Équipe']);
+  if(S.isAdmin) tabs.push(['settings','Réglages']);
   return `<header class="top">
     <div class="top-row">
       <div class="brand"><h1>Franchise PY</h1><p>Forfait ${S.settings.plafond} jours · cycle juin ${c} → mai ${c+1}</p></div>
@@ -344,17 +387,17 @@ function header(){
 
 
 
-function summaryCard(sum, al, m){
-  const scale = Math.max(al.plafond, sum.proj) * 1.04 || 1;
-  const w = Math.min(100, sum.real/scale*100), p = Math.min(100, sum.proj/scale*100), cap = al.plafond/scale*100;
+function summaryCard(sum, al, m, pj){
+  const proj = pj.noRtt, scale = Math.max(al.plafond, proj, sum.real) * 1.04 || 1;
+  const w = Math.min(100, sum.real/scale*100), p = Math.min(100, proj/scale*100), cap = al.plafond/scale*100;
   return `<section class="card raised" aria-labelledby="sum-h">
     <div class="row between"><h3 id="sum-h">Jours travaillés · cycle ${cycLabel(cyc())}</h3><span class="pill ${m.status}">${STATUS[m.status]}</span></div>
-    <div class="big num" style="margin-top:10px">${nf(sum.proj)}<small>projetés sur ${al.plafond} jours</small></div>
-    <div class="meter" role="img" aria-label="${nf(sum.real)} jours réalisés, ${nf(sum.proj)} projetés, plafond ${al.plafond}">
+    <div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours</small></div>
+    <div class="meter" role="img" aria-label="${nf(sum.real)} jours réalisés, ${nf(proj)} projetés sur le cycle complet, plafond ${al.plafond}">
       <div class="p" style="width:${p}%"></div><div class="w" style="width:${w}%"></div>
       <div class="cap" style="left:${cap}%"><b>${al.plafond}</b></div>
     </div>
-    <div class="meter-legend"><span><i style="background:var(--accent)"></i>Réalisés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Prévus</span></div>
+    <div class="meter-legend"><span><i style="background:var(--accent)"></i>Réalisés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Projection du cycle complet</span></div>
     <dl class="facts">
       <div><dt>Réalisés à ce jour</dt><dd>${nf(sum.real)} j</dd></div>
       <div><dt>Marge sur le plafond</dt><dd>${m.reste>=0?nf(m.reste):'−'+nf(-m.reste)} j</dd></div>
@@ -363,23 +406,47 @@ function summaryCard(sum, al, m){
       <div><dt>Jours OFF</dt><dd>${sum.off}</dd></div>
       <div><dt>Fériés chômés (JF)</dt><dd>${sum.jf}</dd></div>
       <div><dt>Fériés travaillés (déduits)</dt><dd>${sum.jfw}</dd></div>
-      <div><dt>Arrêts · accidents du travail</dt><dd>${sum.am} · ${sum.at}</dd></div>
+      <div><dt>Arrêts · accidents du travail</dt><dd>${S.consult ? sum.am+sum.at : sum.am} · ${S.consult ? '—' : sum.at}</dd></div>
     </dl>
     <div class="val-list" style="margin-top:14px">
       ${sum.jfw>0 ? `<p class="note info">${sum.jfw} férié(s) travaillé(s) : payés, sans récupération, et retirés du décompte des ${al.plafond} jours.</p>` : ''}
-      ${m.toRest>0 ? `<p class="note">À ce rythme vous travaillerez ${nf(m.toRest)} jour(s) de trop. Passez-en en OFF, RTT ou CP.</p>` : ''}
-      ${sum.blank>0 ? `<p class="note info">${sum.blank} jour(s) du cycle ne sont pas encore planifiés.</p>` : ''}
-      ${(sum.cp!==al.cp || sum.rtt!==al.rtt) ? `<p class="note info">Quota défini par la DRH : ${al.cp} CP et ${al.rtt} RTT. Vous en avez planifié ${sum.cp} et ${sum.rtt}.</p>` : ''}
+      ${sum.blank>0 ? `<p class="note info">${sum.blank} jour(s) du cycle ne sont pas encore planifiés (estimés dans la projection).</p>` : ''}
+      ${(sum.cp!==al.cp || sum.rtt!==al.rtt) ? `<p class="note info">Quota défini par la DRH : ${al.cp} CP et ${al.rtt} RTT. Planifiés : ${sum.cp} et ${sum.rtt}.</p>` : ''}
+      ${sum.maxRtt>2 ? `<p class="note">${sum.maxRtt} RTT consécutifs sont planifiés : le maximum est de 2 consécutifs.</p>` : ''}
       ${sum.maxStreak>=7 ? `<p class="note">${sum.maxStreak} jours travaillés d'affilée sont planifiés. Un repos hebdomadaire de 35 heures consécutives est obligatoire.</p>` : ''}
     </div>
   </section>`;
 }
 
-function monthsChart(sum){
-  const ms = cycleMonths(cyc()), mx = Math.max(23, ...sum.per.JT);
+function projectionCard(sum, al, m, pj){
+  const over = pj.noRtt - al.plafond;
+  let advice;
+  if(over > 0){
+    advice = pj.withRtt <= al.plafond
+      ? `<p class="note">Dépassement de ${over} jour(s) si les ${pj.rttLeft} RTT restants ne sont pas pris. En les posant (en ${pj.sessions} fois minimum, 2 RTT consécutifs au maximum), la projection passe à ${pj.withRtt} jours : dans le plafond.</p>`
+      : `<p class="note">Même en posant les ${pj.rttLeft} RTT restants, il resterait ${pj.withRtt-al.plafond} jour(s) au-dessus du plafond : ajoutez des jours OFF ou des CP.</p>`;
+  } else {
+    advice = `<p class="note info">Dans le plafond, avec ${-over} jour(s) de marge sans prendre les ${pj.rttLeft} RTT restants.</p>`;
+  }
+  return `<section class="card" aria-labelledby="pj-h"><h3 id="pj-h">Projection du cycle complet</h3>
+    <dl class="facts">
+      <div><dt>Jours planifiés (réel, sinon prévu)</dt><dd>${pj.planned} j</dd></div>
+      <div><dt>Jours non planifiés, estimés</dt><dd>${pj.est} j</dd></div>
+      <div><dt>CP restants (${pj.cpLeft})</dt><dd>− ${pj.cpDays} j</dd></div>
+      <div><dt>Projection sans les RTT restants</dt><dd>${pj.noRtt} j</dd></div>
+      <div><dt>RTT restants à prendre</dt><dd>− ${pj.rttLeft} j</dd></div>
+      <div><dt>Projection avec tous les RTT pris</dt><dd>${pj.withRtt} j</dd></div>
+    </dl>
+    <div class="val-list" style="margin-top:14px">${advice}</div>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Hypothèses : les jours sans saisie sont estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF) ; un CP en jours ouvrables retire 5/6 de jour travaillé ; un RTT retire 1 jour, par prises de 2 consécutifs au maximum.</p></section>`;
+}
+
+function monthsChart(pj){
+  const ms = cycleMonths(cyc()), tot = ms.map((_,i) => pj.perP[i] + pj.perE[i]), mx = Math.max(23, ...tot);
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
-  return `<section class="card" aria-labelledby="bars-h"><h3 id="bars-h">Jours travaillés par mois</h3>
-    <div class="bars">${ms.map((mo,i) => `<div class="${mo.ym===cur?'cur':''}"><em>${sum.per.JT[i]||''}</em><span style="height:${Math.max(2,sum.per.JT[i]/mx*62)}px"></span>${MSHORT[mo.m]}</div>`).join('')}</div></section>`;
+  return `<section class="card" aria-labelledby="bars-h"><h3 id="bars-h">Jours travaillés par mois (projection)</h3>
+    <div class="bars">${ms.map((mo,i) => `<div class="${mo.ym===cur?'cur':''}"><em>${tot[i]||''}</em><i class="stk"><span class="est" style="height:${pj.perE[i]/mx*62}px"></span><span style="height:${Math.max(pj.perP[i]?2:0,pj.perP[i]/mx*62)}px"></span></i>${MSHORT[mo.m]}</div>`).join('')}</div>
+    <div class="meter-legend" style="margin-top:8px"><span><i style="background:var(--accent)"></i>Planifiés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Estimés</span></div></section>`;
 }
 
 function interviewCard(hr){
@@ -391,8 +458,9 @@ function interviewCard(hr){
 function calendarCard(ctx){
   const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), t = todayIso();
   const { prev, reel } = ctx.doc, rec = ctx.doc.months[mo.ym] || {};
-  const locked = !!rec.valide, ro = ctx.readonly || locked || !S.canWrite;
-  const layer = ctx.readonly ? 'reel' : S.layer;
+  const edit = !!ctx.edit, view = ctx.readonly && !edit;
+  const locked = !!rec.valide, ro = view || (locked && !edit) || !S.canWrite;
+  const layer = view ? 'reel' : S.layer;
   const first = new Date(mo.y,mo.m,1), lead = (first.getDay()+6)%7, dim = new Date(mo.y,mo.m+1,0).getDate();
   const weeks = Math.ceil((lead+dim)/7);
   let cells = `<div></div>` + DOW.map(d => `<div class="hd">${d}</div>`).join('');
@@ -416,15 +484,17 @@ function calendarCard(ctx){
       <h2 id="cal-h">${MONTHS[mo.m]} ${mo.y}</h2>
       <button class="icon-btn" data-act="month" data-v="1" aria-label="Mois suivant" ${S.mi===11?'disabled':''}>›</button>
     </div>
-    ${ctx.readonly ? `<p class="muted" style="margin:10px 0 0;text-align:center">Vue du planning (réel, sinon prévu). Les points rouges signalent un écart avec le prévu.</p>` : `
+    ${view ? `<p class="muted" style="margin:10px 0 0;text-align:center">Vue du planning (réel, sinon prévu). Les points rouges signalent un écart avec le prévu.</p>` : `
     <div class="row" style="justify-content:center;margin-top:12px"><div class="seg" role="group" aria-label="Couche de saisie">
       <button data-act="layer" data-v="prev" aria-pressed="${S.layer==='prev'}">Prévu</button>
       <button data-act="layer" data-v="reel" aria-pressed="${S.layer==='reel'}">Réel</button></div></div>`}
     ${ro ? '' : `<div class="brushes" role="group" aria-label="Code à appliquer">
-      ${CODES.map(x => `<button class="brush" style="background:var(--c-${x.k}-bg);color:var(--c-${x.k}-fg)" data-act="brush" data-v="${x.k}" aria-pressed="${S.brush===x.k}">${x.k} · ${x.label}</button>`).join('')}
+      ${CODES.filter(x => !x.view).map(x => `<button class="brush" style="background:var(--c-${x.k}-bg);color:var(--c-${x.k}-fg)" data-act="brush" data-v="${x.k}" aria-pressed="${S.brush===x.k}">${x.k} · ${x.label}</button>`).join('')}
       <button class="brush erase" data-act="brush" data-v="" aria-pressed="${S.brush===''}">Effacer</button></div>`}
     ${locked && !ctx.readonly ? `<p class="note info" style="margin:14px 0">Mois validé : la saisie est verrouillée. Contactez la DRH pour une correction.</p>` : ''}
-    ${!locked && !ctx.readonly && !S.canWrite ? `<p class="note" style="margin:14px 0">Lecture seule : votre accès ne permet pas la saisie.</p>` : ''}
+    ${locked && edit ? `<p class="note" style="margin:14px 0">Ce mois est validé. Toute modification annule la validation : le collaborateur devra revalider.</p>` : ''}
+    ${edit && !locked ? `<p class="note info" style="margin:14px 0">Vous modifiez le planning de ${esc(nameOf(ctx.uid))}.</p>` : ''}
+    ${!locked && !view && !edit && !S.canWrite ? `<p class="note" style="margin:14px 0">Lecture seule : votre accès ne permet pas la saisie.</p>` : ''}
     <div class="cal" style="margin-top:${ro?14:0}px">${cells}</div>
     <div class="tally">${CODES.map(x => tally[x.k] ? `<span>${x.k} : <b>${tally[x.k]}</b></span>` : '').join('')}</div>
     ${ro ? '' : `<div class="row" style="margin-top:14px">
@@ -467,6 +537,7 @@ function validationCard(ctx){
       <div class="field"><label for="charge">Votre charge de travail ce mois-ci</label>
         <select id="charge" data-k="charge"><option value="ok" ${dr.charge==='ok'?'selected':''}>Raisonnable</option><option value="haute" ${dr.charge==='haute'?'selected':''}>Élevée</option><option value="excessive" ${dr.charge==='excessive'?'selected':''}>Excessive</option></select></div>
       <div class="field"><label for="comment">Commentaire (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
+      ${rec.reopened ? `<p class="note">La DRH a modifié ce mois le ${fmtDate(rec.reopened.slice(0,10))} : vérifiez le planning et revalidez.</p>` : ''}
       ${missing ? `<p class="note">${missing} jour(s) sans réel. Utilisez « Confirmer le prévu comme réalisé » dans la couche Réel, puis corrigez les écarts.</p>` : ''}
       ${future ? `<p class="note info">Ce mois n'a pas commencé : la validation sera possible en cours de mois.</p>` : ''}
       ${S.signing==='validate' ? signPanel('validate') : `<div><button class="btn primary" data-act="sign-open" data-v="validate" ${missing||future||!S.canWrite?'disabled':''}>Signer et valider ${label}</button></div>`}
@@ -483,11 +554,11 @@ function historyCard(h){
     </tbody></table></section>`;
 }
 function employeeView(ctx){
-  const al = alloc(ctx.hr), sum = summarize(ctx.doc, cyc()), m = metrics(sum, al);
+  const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
   S.verCtx = { uid:ctx.uid, doc:ctx.doc };
   return `<div class="grid2">
-    <div class="stack">${summaryCard(sum, al, m)}${interviewCard(ctx.hr)}${monthsChart(sum)}${historyCard(S.history[ctx.uid])}</div>
-    <div class="stack">${calendarCard(ctx)}${validationCard(ctx)}${downloadCard()}</div></div>`;
+    <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj)}${historyCard(S.history[ctx.uid])}</div>
+    <div class="stack">${calendarCard(ctx)}${consult ? '' : validationCard(ctx)}${consult ? '' : downloadCard()}</div></div>`;
 }
 
 
@@ -495,14 +566,15 @@ function employeeView(ctx){
 
 function teamRows(){
   const c = cyc();
-  const ids = Object.keys(S.hr).filter(u => S.showArchived ? S.hr[u].actif===false : S.hr[u].actif!==false);
+  const base = S.isAdmin ? Object.keys(S.hr) : [...S.consultIds];
+  const ids = base.filter(u => S.hr[u] && (S.isAdmin ? (S.showArchived ? S.hr[u].actif===false : S.hr[u].actif!==false) : true));
   const rows = ids.map(uid => {
     const hr = S.hr[uid], al = alloc(hr), doc = S.allDocs[uid] || emptyCycle();
     const started = Object.keys(doc.prev).length + Object.keys(doc.reel).length > 0;
-    const sum = started ? summarize(doc, c) : null;
-    const m = started ? metrics(sum, al) : { status:'none', reste:al.plafond, toRest:0 };
-    const late = started ? lateMonths(sum.validated, c) : [];
-    return { uid, hr, al, sum, m, late, started, iv:interviewStatus(hr) };
+    const sum = started ? summarize(doc, c) : null, pj = started ? projectCycle(doc, c, al, sum) : null;
+    const m = started ? metrics(sum, al, pj) : { status:'none', reste:al.plafond, toRest:0 };
+    const late = started && S.isAdmin ? lateMonths(sum.validated, c) : [];
+    return { uid, hr, al, sum, pj, m, late, started, iv:S.isAdmin ? interviewStatus(hr) : { cls:'ok', label:'' } };
   });
   const q = S.fQ.trim().toLowerCase();
   const out = rows.filter(r => (!S.fRest || r.hr.restaurant===S.fRest) && (!S.fStatus || r.m.status===S.fStatus) && (!q || nameOf(r.uid).toLowerCase().includes(q) || (r.hr.restaurant||'').toLowerCase().includes(q)));
@@ -516,6 +588,9 @@ function alertChips(r){
   if(r.sum.maxStreak>=7) c.push(`<span class="pill dep">${r.sum.maxStreak} j d'affilée</span>`);
   if(r.sum.issues.length) c.push(`<span class="pill watch">Repos/charge signalés</span>`);
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
+  if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
+  else if(r.pj && r.pj.noRtt>r.al.plafond) c.push(`<span class="pill watch">${r.pj.rttLeft} RTT à poser</span>`);
+  if(r.sum.maxRtt>2) c.push(`<span class="pill dep">${r.sum.maxRtt} RTT d'affilée</span>`);
   if(r.sum.blank>0) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
   if(r.iv.cls!=='ok') c.push(`<span class="pill ${r.iv.cls==='dep'?'dep':'info'}">Entretien ${r.iv.label.toLowerCase()}</span>`);
   return c.length ? c.join('') : '<span class="muted">Aucune</span>';
@@ -530,7 +605,7 @@ function addPanel(){
       ${f('add-fonction','Fonction','','text','maxlength="80"')}
       <div class="field"><label for="add-categorie">Catégorie</label><select id="add-categorie"><option>Directeur</option><option>Cadre</option></select></div>
       ${f('add-restaurant','Restaurant','','text','maxlength="80"')}${f('add-n1','N+1 (responsable)','','text','maxlength="80"')}
-      <div class="field"><label for="add-role">Droits</label><select id="add-role"><option value="employe">Salarié (voit son planning)</option><option value="admin">Administrateur (DRH, vue complète)</option></select></div>
+      <div class="field"><label for="add-role">Droits</label><select id="add-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
       ${f('add-plafond',`Jours à travailler · cycle ${cycLabel(cyc())}`,s.plafond,'number','min="1" max="366"')}
       ${f('add-cp',`CP à prendre · cycle ${cycLabel(cyc())}`,s.cp,'number','min="0" max="60"')}
       ${f('add-rtt',`RTT à prendre · cycle ${cycLabel(cyc())}`,s.rtt,'number','min="0" max="30"')}
@@ -564,10 +639,10 @@ function quotasCard(){
 
 function teamView(){
   const { all, rows } = teamRows();
-  const act = Object.values(S.hr).filter(h => h.actif!==false).length;
+  const act = S.isAdmin ? Object.values(S.hr).filter(h => h.actif!==false).length : all.length;
   const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch').length,
     over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&(r.sum.maxStreak>=7||r.sum.issues.length||r.late.length)).length };
-  const rests = [...new Set(Object.values(S.hr).map(h => h.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
+  const rests = [...new Set(all.map(r => r.hr.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
   return `<div class="kpis">
     <div class="kpi"><b>${S.showArchived?all.length:act}</b><span>${S.showArchived?'Collaborateurs retirés':'Collaborateurs suivis'}</span></div>
     <div class="kpi"><b>${k.ok}</b><span>Conformes</span></div>
@@ -575,20 +650,20 @@ function teamView(){
     <div class="kpi"><b>${k.over}</b><span>Au-dessus du plafond</span></div>
     <div class="kpi"><b>${k.al}</b><span>Avec alertes de suivi</span></div></div>
   ${S.adding ? addPanel() : ''}
-  <section class="card"><div class="row between"><h2>Équipe · cycle ${cycLabel(cyc())}</h2>
-    <span class="row"><button class="btn small" data-act="export" ${rows.length?'':'disabled'}>Exporter en Excel</button><button class="btn small primary" data-act="add-open">Ajouter un collaborateur</button></span></div>
+  <section class="card"><div class="row between"><h2>${S.role==='superviseur' ? 'Directeurs' : 'Équipe'} · cycle ${cycLabel(cyc())}</h2>
+    ${S.isAdmin ? `<span class="row"><button class="btn small" data-act="export" ${rows.length?'':'disabled'}>Exporter en Excel</button><button class="btn small primary" data-act="add-open">Ajouter un collaborateur</button></span>` : `<span class="pill info">Consultation</span>`}</div>
   <div class="filters">
     <div class="field"><label for="f-q">Recherche</label><input type="search" id="f-q" data-filter="fQ" value="${esc(S.fQ)}" placeholder="Nom ou restaurant"></div>
     <div class="field"><label for="f-rest">Restaurant</label><select id="f-rest" data-filter="fRest"><option value="">Tous</option>${rests.map(r => `<option ${S.fRest===r?'selected':''}>${esc(r)}</option>`).join('')}</select></div>
     <div class="field"><label for="f-st">Statut</label><select id="f-st" data-filter="fStatus"><option value="">Tous</option>${Object.entries(STATUS).map(([k2,l]) => `<option value="${k2}" ${S.fStatus===k2?'selected':''}>${l}</option>`).join('')}</select></div>
-    <div class="field"><label for="f-arch">Affichage</label><select id="f-arch" data-filter="showArchived"><option value="">Collaborateurs actifs</option><option value="1" ${S.showArchived?'selected':''}>Collaborateurs retirés</option></select></div>
+    ${S.isAdmin ? `<div class="field"><label for="f-arch">Affichage</label><select id="f-arch" data-filter="showArchived"><option value="">Collaborateurs actifs</option><option value="1" ${S.showArchived?'selected':''}>Collaborateurs retirés</option></select></div>` : ''}
   </div>
-  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
+  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r" title="Projection du cycle complet, sans les RTT restants">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
     ${rows.map(r => `<tr data-act="open" data-v="${esc(r.uid)}" tabindex="0">
       <td><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
       <td>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></td>
       <td class="r num">${r.started?nf(r.sum.real):'—'}</td>
-      <td class="r num">${r.started?`${nf(r.sum.proj)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.sum.proj/r.al.plafond*100)}%"></i></span>`:`— / ${r.al.plafond}`}</td>
+      <td class="r num">${r.started?`${nf(r.pj.noRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.noRtt/r.al.plafond*100)}%"></i></span>`:`— / ${r.al.plafond}`}</td>
       <td class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
       <td><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
       <td><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
@@ -596,19 +671,26 @@ function teamView(){
   </section>${heatTable(rows)}`;
 }
 
+function consultDetailView(){
+  const uid = S.viewUid, hr = S.hr[uid] || {}, doc = S.allDocs[uid] || emptyCycle();
+  return `<div class="row between"><button class="btn small" data-act="back">‹ Retour</button></div>
+    <section class="card"><div class="row between"><h2>${esc(hr.nom||'')}</h2><span class="pill info">Consultation</span></div>
+    <p class="muted" style="margin:6px 0 0">${esc([hr.fonction, hr.categorie, hr.restaurant, hr.n1 ? 'N+1 : '+hr.n1 : ''].filter(Boolean).join(' · '))}</p></section>` +
+    employeeView({ uid, doc, hr, readonly:true, consult:true });
+}
 function detailView(){
   const uid = S.viewUid, hr = S.hr[uid] || {}, c = cyc(), a = (hr.cycles && hr.cycles[c]) || {};
   const f = (id,l,v,t='text',extra='') => `<div class="field"><label for="${id}">${l}</label><input type="${t}" id="${id}" value="${esc(v)}" ${extra}></div>`;
   const archived = hr.actif === false;
   const head = `<div class="row between"><button class="btn small" data-act="back">‹ Retour à l'équipe</button></div>`;
-  const form = `<section class="card"><div class="row between"><h2>${esc(nameOf(uid))}</h2><span class="row">${hr.role==='admin'?'<span class="pill info">Administrateur</span>':''}${archived ? '<span class="pill none">Retiré du suivi</span>' : ''}${hr.email ? '' : '<span class="pill watch">Adresse e-mail manquante</span>'}</span></div>
+  const form = `<section class="card"><div class="row between"><h2>${esc(nameOf(uid))}</h2><span class="row">${hr.role && hr.role!=='employe' ? `<span class="pill info">${esc(ROLES[hr.role]||hr.role)}</span>` : ''}${archived ? '<span class="pill none">Retiré du suivi</span>' : ''}${hr.email ? '' : '<span class="pill watch">Adresse e-mail manquante</span>'}</span></div>
     <div class="form-grid" style="margin-top:12px">
       ${f('hr-nom','Nom et prénom',hr.nom||'','text','maxlength="80"')}
       ${f('hr-email','Adresse e-mail (identifiant de connexion)',hr.email||'','email','maxlength="120" autocomplete="off"')}
       ${f('hr-fonction','Fonction',hr.fonction||'','text','maxlength="80"')}
       <div class="field"><label for="hr-categorie">Catégorie</label><select id="hr-categorie"><option value="">—</option>${['Directeur','Cadre'].map(x=>`<option ${hr.categorie===x?'selected':''}>${x}</option>`).join('')}</select></div>
       ${f('hr-restaurant','Restaurant',hr.restaurant||'','text','maxlength="80"')}${f('hr-n1','N+1 (responsable)',hr.n1||'','text','maxlength="80"')}
-      <div class="field"><label for="hr-role">Droits</label><select id="hr-role"><option value="employe" ${hr.role!=='admin'?'selected':''}>Salarié</option><option value="admin" ${hr.role==='admin'?'selected':''}>Administrateur (DRH)</option></select></div>
+      <div class="field"><label for="hr-role">Droits</label><select id="hr-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}" ${(hr.role||'employe')===k?'selected':''}>${l}</option>`).join('')}</select></div>
       ${f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
       ${f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
       ${f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
@@ -622,7 +704,7 @@ function detailView(){
     </div>
     <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
   const doc = S.allDocs[uid] || emptyCycle();
-  return head + form + employeeView({ uid, doc, hr, readonly:true, isAdmin:true });
+  return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
 }
 
 
@@ -685,7 +767,9 @@ function render(){
   } else {
     showHeader = true;
     if(S.tab==='team' && S.isAdmin) body = S.viewUid ? detailView() : teamView();
+    else if(S.tab==='team' && S.consult) body = S.viewUid ? consultDetailView() : teamView();
     else if(S.tab==='settings' && S.isAdmin) body = settingsView();
+    else if(!S.hasOwn) body = teamView();
     else body = employeeView({ uid:S.uid, doc:S.myCycle, hr:S.myHr, readonly:false, isAdmin:S.isAdmin });
   }
   const top = showHeader ? header() : `<header class="top"><div class="top-row"><div class="brand"><h1>Franchise PY</h1><p>Suivi du forfait 218 jours</p></div></div><div style="height:12px"></div></header>`;
@@ -763,25 +847,27 @@ function dayRowsX(hr, doc, days){
   return rows;
 }
 function recapRowsX(hr, doc){
-  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), m = metrics(sum, al), hol = holidays(c);
-  const rows = [['Mois', ...CODES.map(x => x.k), 'Fériés travaillés', 'Non planifiés', 'Validation']];
+  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), pj = projectCycle(doc, c, al, sum), m = metrics(sum, al, pj), hol = holidays(c);
+  const rows = [['Mois', ...REAL_CODES.map(x => x.k), 'Fériés travaillés', 'Non planifiés', 'Validation']];
   for(const mo of cycleMonths(c)){
     const t = {}; let blank = 0, jfw = 0;
     for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
-    rows.push([`${MONTHS[mo.m]} ${mo.y}`, ...CODES.map(x => t[x.k]||0), jfw, blank, rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '']);
+    rows.push([`${MONTHS[mo.m]} ${mo.y}`, ...REAL_CODES.map(x => t[x.k]||0), jfw, blank, rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '']);
   }
   rows.push([]);
   rows.push(['Collaborateur', hr.nom]); rows.push(['Cycle', cycLabel(c)]);
-  rows.push(['Jours réalisés (plafond)', sum.real]); rows.push(['Projection du cycle', sum.proj]); rows.push(['Plafond', al.plafond]);
+  rows.push(['Jours réalisés (plafond)', sum.real]); rows.push(['Jours planifiés (réel, sinon prévu)', pj.planned]); rows.push(['Jours non planifiés estimés', pj.est]);
+  rows.push(['CP restants (jours travaillés en moins)', pj.cpDays]); rows.push(['Projection sans les RTT restants', pj.noRtt]);
+  rows.push(['RTT restants à prendre', pj.rttLeft]); rows.push(['Projection avec tous les RTT pris', pj.withRtt]); rows.push(['Plafond', al.plafond]);
   rows.push(['Marge (−) / excédent', -m.reste]);
   rows.push(['CP planifiés', sum.cp]); rows.push(['CP à prendre', al.cp]); rows.push(['RTT planifiés', sum.rtt]); rows.push(['RTT à prendre', al.rtt]);
   rows.push(['Fériés travaillés déduits', sum.jfw]);
   return rows;
 }
 function reportHead(hr, title, sub){
-  return `<div class="rpt"><h1>Franchise PY · ${esc(title)}</h1>
-    <p><b>${esc(hr.nom)}</b>${hr.fonction ? ' · '+esc(hr.fonction) : ''}${hr.restaurant ? ' · '+esc(hr.restaurant) : ''}${hr.n1 ? ' · N+1 : '+esc(hr.n1) : ''}<br>${esc(sub)}<br><small>Édité le ${fmtDate(todayIso())}</small></p>`;
+  return `<div class="rpt">${hr.restaurant ? `<p class="rest"><b>${esc(hr.restaurant)}</b></p>` : ''}<h1>${esc(title)}</h1>
+    <p><b>${esc(hr.nom)}</b>${hr.fonction ? ' · '+esc(hr.fonction) : ''}${hr.n1 ? ' · N+1 : '+esc(hr.n1) : ''}<br>${esc(sub)}<br><small>Édité le ${fmtDate(todayIso())}</small></p>`;
 }
 function reportMonth(uid, doc, hr){
   const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), rec = doc.months[mo.ym] || {};
@@ -798,14 +884,15 @@ function reportMonth(uid, doc, hr){
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
 }
 function reportCycle(uid, doc, hr){
-  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), m = metrics(sum, al), ms = cycleMonths(c), hol = holidays(c);
+  const c = cyc(), al = alloc(hr), sum = summarize(doc, c), pj = projectCycle(doc, c, al, sum), m = metrics(sum, al, pj), ms = cycleMonths(c), hol = holidays(c);
   const rows = ms.map(mo => { const t = {}; let blank = 0, jfw = 0;
     for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
-    return `<tr><td>${MONTHS[mo.m]} ${mo.y}</td>${CODES.map(x => `<td>${t[x.k]||0}</td>`).join('')}<td>${jfw}</td><td>${blank}</td><td>${rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '—'}</td></tr>`; }).join('');
+    return `<tr><td>${MONTHS[mo.m]} ${mo.y}</td>${REAL_CODES.map(x => `<td>${t[x.k]||0}</td>`).join('')}<td>${jfw}</td><td>${blank}</td><td>${rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '—'}</td></tr>`; }).join('');
   return reportHead(hr, `Relevé du cycle ${cycLabel(c)}`, `Forfait annuel en jours · juin ${c} → mai ${c+1}`) +
-    `<table><thead><tr><th>Mois</th>${CODES.map(x => `<th>${x.k}</th>`).join('')}<th>Fériés trav.</th><th>Non planifiés</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
-    <p><b>Jours retenus pour le plafond :</b> réalisés ${nf(sum.real)} · projection du cycle ${nf(sum.proj)} sur ${al.plafond} (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} jour(s)).<br>
+    `<table><thead><tr><th>Mois</th>${REAL_CODES.map(x => `<th>${x.k}</th>`).join('')}<th>Fériés trav.</th><th>Non planifiés</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
+    <p><b>Jours retenus pour le plafond :</b> réalisés ${nf(sum.real)} · planifiés ${pj.planned} · non planifiés estimés ${pj.est}.<br>
+    <b>Projection du cycle complet :</b> ${pj.noRtt} jours sans les ${pj.rttLeft} RTT restants (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} par rapport à ${al.plafond}) · ${pj.withRtt} jours avec tous les RTT pris (2 consécutifs maximum).<br>
     <b>Quotas :</b> CP ${sum.cp} / ${al.cp} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p></div>`;
 }
@@ -829,11 +916,11 @@ let toastTimer;
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),4200); }
 const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
 function exportCsv(){
-  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection du cycle','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Jours consécutifs max','Repos/charge signalés','Entretien']];
+  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection sans RTT restants','Projection avec RTT pris','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Jours consécutifs max','Repos/charge signalés','Entretien']];
   for(const r of teamRows().rows){
-    rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.sum.proj:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.started?r.sum.maxStreak:'', r.started?(r.sum.issues.length?'oui':'non'):'', r.iv.label]);
+    rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.pj.noRtt:'', r.started?r.pj.withRtt:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.started?r.sum.maxStreak:'', r.started?(r.sum.issues.length?'oui':'non'):'', r.iv.label]);
   }
-  saveBlob(`forfait-jours-equipe-${cycLabel(cyc())}.xlsx`, makeXlsx([{ name:'Équipe', rows, widths:[26,30,24,12,18,18,9,14,18,13,13,13,13,10,16,28,13,16,14,16,16] }]));
+  saveBlob(`forfait-jours-equipe-${cycLabel(cyc())}.xlsx`, makeXlsx([{ name:'Équipe', rows, widths:[26,30,24,12,18,18,9,14,22,22,13,13,13,13,10,16,28,13,16,14,16,16] }]));
 }
 function defaultFor(d, hol){ const iso = toIso(d); return hol[iso] ? 'JF' : (d.getDay()===0||d.getDay()===6) ? 'OFF' : 'JT'; }
 async function changeCycle(c){
@@ -883,7 +970,7 @@ $app.addEventListener('click', ev => {
   if(act==='auth-to-login'){ S.auth = { mode:'login', step:1, email:'' }; render(); return; }
   if(act==='logout'){ logout(); return; }
   if(!S.session || !S.uid) return;
-  const hol = holidays(c), doc = S.myCycle, mo = cycleMonths(c)[S.mi];
+  const hol = holidays(c), doc = S.allDocs[tgt().uid] || emptyCycle(), mo = cycleMonths(c)[S.mi];
   const val = id => document.getElementById(id).value.trim();
   if(act==='tab'){ S.tab=v; S.viewUid=null; S.signing=null; render(); }
   else if(act==='month'){ S.mi = Math.min(11, Math.max(0, S.mi + Number(v))); S.signing=null; padStrokes=[]; render(); }
@@ -939,12 +1026,12 @@ $app.addEventListener('click', ev => {
     const rows = Object.entries(S.hr).filter(([,h]) => h.actif!==false).map(([id]) => ({ collaborateur_id:id, cycle:c, plafond:numOrNull('q-p-'+id), cp:numOrNull('q-c-'+id), rtt:numOrNull('q-r-'+id) }));
     enqueue(async () => { await upsertChunks('quotas', rows, 'collaborateur_id,cycle'); await loadData(); render(); toast('Quotas enregistrés.'); });
   }
-  else if(act==='open'){ S.viewUid=v; S.mi = defaultMonthIndex(c); render(); loadHistory(v).then(safeRender).catch(() => {}); }
+  else if(act==='open'){ S.viewUid=v; S.mi = defaultMonthIndex(c); render(); if(S.isAdmin) loadHistory(v).then(safeRender).catch(() => {}); }
   else if(act==='back'){ S.viewUid=null; S.confirmDel=null; render(); }
   else if(act==='reopen'){
     const uid = S.viewUid;
     enqueue(async () => {
-      await dbDo(sb.from('validations').update({ valide:false, visa:null, signature:null, empreinte:null, signe_le:null }).eq('collaborateur_id',uid).eq('mois',v));
+      await dbDo(sb.from('validations').update({ valide:false, visa:null, signature:null, empreinte:null, signe_le:null, reouvert_le:new Date().toISOString() }).eq('collaborateur_id',uid).eq('mois',v));
       await loadData(); render(); toast('Mois rouvert pour le salarié.');
     });
   }

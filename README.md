@@ -49,6 +49,21 @@ N'utilisez **jamais** la clé `service_role` dans ce dépôt.
 À sa première connexion, la personne utilise « Première connexion ou mot de passe oublié », saisit son adresse, clique sur le lien reçu par e-mail, puis choisit son mot de passe.
 Ajout, retrait (historique conservé) et suppression définitive se font depuis la même fiche.
 
+## Rôles et droits
+| Rôle | Ce qu'il voit | Ce qu'il peut faire |
+|---|---|---|
+| Salarié | son propre planning | saisir, valider et signer ses mois |
+| Superviseur | son planning + le planning des **directeurs** (lecture seule) | consulter, sans modifier |
+| Lecteur | **tous** les plannings (lecture seule) | consulter uniquement, sans planning personnel |
+| Administrateur (DRH) | tout | modifier les plannings, quotas, fiches, viser et rouvrir les mois |
+
+- Les superviseurs et lecteurs n'accèdent ni aux adresses e-mail, ni aux entretiens, ni aux déclarations de validation. Les arrêts maladie et accidents du travail leur apparaissent sous le code neutre « ABS ». Ce filtrage est fait par la base de données (fonctions `consultation_*`).
+- Une modification d'un jour par un administrateur dans un mois déjà validé **annule la validation** : le collaborateur voit un message et doit revalider.
+- Pour une base déjà installée, exécutez `supabase/migration_roles_projection.sql`.
+
+## Projection du cycle complet
+La page projette le nombre de jours travaillés sur tout le cycle : jours planifiés (réel, sinon prévu) + jours non planifiés estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF). Les CP restants retirent 5/6 de jour chacun (CP en jours ouvrables). Deux projections sont affichées : sans prendre les RTT restants, puis avec tous les RTT pris, à raison de 2 RTT consécutifs au maximum par prise. Un avertissement signale plus de 2 RTT consécutifs planifiés.
+
 ## Sécurité : ce qui est appliqué côté serveur
 - RLS activée sur toutes les tables ; l'accès anonyme est révoqué.
 - Un salarié ne lit et n'écrit que ses lignes. Un compte sans fiche active ne voit rien.
