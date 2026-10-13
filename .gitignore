@@ -1,0 +1,4 @@
+.DS_Store
+.env
+*.log
+supabase/*_prive*.sql
