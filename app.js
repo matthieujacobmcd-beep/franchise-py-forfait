@@ -2,7 +2,7 @@
 'use strict';
 const nowD = new Date();
 const curCycle = () => nowD.getMonth() >= 5 ? nowD.getFullYear() : nowD.getFullYear() - 1;
-const DEF = { cycle: curCycle(), plafond: 218, cp: 30, rtt: 8, preavis: 60, arretCompte: true };
+const DEF = { cycle: curCycle(), plafond: 218, cp: 30, rtt: 11, preavis: 60, arretCompte: true };
 const CODES = [
   { k:'JT',  label:'Jour travaillé' },
   { k:'OFF', label:'Jour OFF' },
@@ -86,12 +86,12 @@ function summarize(doc, c){
   const ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
   const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0) };
   const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0, ABS:0 };
-  let blank=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0;
+  let blank=0, coded=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0;
   const hol = holidays(c);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '';
     if(!e){ blank++; last=null; streak=0; rttRun=0; continue; }
-    n[e]++;
+    n[e]++; coded++;
     if(e==='RTT'){ rttRun++; maxRtt = Math.max(maxRtt, rttRun); } else if(e!=='OFF' && e!=='JF'){ rttRun = 0; }
     const i = idx[iso.slice(0,7)];
     if(per[e] && e!=='JT') per[e][i]++;
@@ -110,7 +110,7 @@ function summarize(doc, c){
     validated.push(ym);
     if(m.r11===false || m.r35===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
-  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
+  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
 }
 function alloc(hr){
   const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {};
@@ -130,15 +130,17 @@ function projectCycle(doc, c, al, sum){
   const base = planned + est, noRtt = Math.max(0, base - cpDays), withRtt = Math.max(0, noRtt - rttLeft);
   return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE };
 }
+const MIN_CODED = 30;   // en dessous, le planning est trop partiel pour projeter un dépassement
 function metrics(sum, al, pj){
   const p = pj ? pj.noRtt : sum.proj;
+  if(sum.coded < MIN_CODED && sum.real <= al.plafond) return { status:'none', reste:al.plafond-p, toRest:0 };
   let status='ok';
   if(sum.real>al.plafond) status='dep';
   else if(p>al.plafond) status='risk';
   else if(sum.blank>0 || sum.cp!==al.cp || sum.rtt!==al.rtt) status='watch';
   return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
-const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Non démarré' };
+const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer' };
 function lateMonths(validated, c){
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && !validated.includes(ym));
@@ -421,7 +423,9 @@ function summaryCard(sum, al, m, pj){
 function projectionCard(sum, al, m, pj){
   const over = pj.noRtt - al.plafond;
   let advice;
-  if(over > 0){
+  if(sum.coded < MIN_CODED){
+    advice = `<p class="note info">Planning trop partiel pour une projection fiable (${sum.coded} jour(s) saisi(s) sur le cycle). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez vos CP et vos RTT : l'estimation ci-dessus est provisoire.</p>`;
+  } else if(over > 0){
     advice = pj.withRtt <= al.plafond
       ? `<p class="note">Dépassement de ${over} jour(s) si les ${pj.rttLeft} RTT restants ne sont pas pris. En les posant (en ${pj.sessions} fois minimum, 2 RTT consécutifs au maximum), la projection passe à ${pj.withRtt} jours : dans le plafond.</p>`
       : `<p class="note">Même en posant les ${pj.rttLeft} RTT restants, il resterait ${pj.withRtt-al.plafond} jour(s) au-dessus du plafond : ajoutez des jours OFF ou des CP.</p>`;
@@ -588,10 +592,11 @@ function alertChips(r){
   if(r.sum.maxStreak>=7) c.push(`<span class="pill dep">${r.sum.maxStreak} j d'affilée</span>`);
   if(r.sum.issues.length) c.push(`<span class="pill watch">Repos/charge signalés</span>`);
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
-  if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
+  if(r.sum.coded < MIN_CODED) c.push(`<span class="pill info">Planning partiel (${r.sum.coded} j)</span>`);
+  else if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
   else if(r.pj && r.pj.noRtt>r.al.plafond) c.push(`<span class="pill watch">${r.pj.rttLeft} RTT à poser</span>`);
   if(r.sum.maxRtt>2) c.push(`<span class="pill dep">${r.sum.maxRtt} RTT d'affilée</span>`);
-  if(r.sum.blank>0) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
+  if(r.sum.blank>0 && r.sum.coded >= MIN_CODED) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
   if(r.iv.cls!=='ok') c.push(`<span class="pill ${r.iv.cls==='dep'?'dep':'info'}">Entretien ${r.iv.label.toLowerCase()}</span>`);
   return c.length ? c.join('') : '<span class="muted">Aucune</span>';
 }
@@ -663,7 +668,7 @@ function teamView(){
       <td><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
       <td>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></td>
       <td class="r num">${r.started?nf(r.sum.real):'—'}</td>
-      <td class="r num">${r.started?`${nf(r.pj.noRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.noRtt/r.al.plafond*100)}%"></i></span>`:`— / ${r.al.plafond}`}</td>
+      <td class="r num">${r.started && r.sum.coded>=MIN_CODED?`${nf(r.pj.noRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.noRtt/r.al.plafond*100)}%"></i></span>`:`— / ${r.al.plafond}`}</td>
       <td class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
       <td><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
       <td><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
