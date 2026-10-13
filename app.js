@@ -44,6 +44,7 @@ const dayDiff = (a,b) => Math.round((parse(b)-parse(a))/864e5);
 const addMonths = (s,n) => { const d = parse(s); d.setMonth(d.getMonth()+n); return toIso(d); };
 const cyc = () => S.cycle;
 const FIRST_CYCLE = 2024;
+const LAST_AHEAD = 10;   // cycles proposés jusqu'à 10 ans après le cycle en cours
 const cycLabel = c => `${c}-${c+1}`;
 
 function holidaysOf(y){
@@ -323,7 +324,7 @@ function avatarOf(id){ return avatarUri(nameOf(id)); }
 
 
 function cycleOptions(){
-  let o=''; for(let c=curCycle()+1; c>=FIRST_CYCLE; c--) o += `<option value="${c}" ${c===cyc()?'selected':''}>Cycle ${cycLabel(c)}${c===curCycle()?' (en cours)':''}</option>`;
+  let o=''; for(let c=curCycle()+LAST_AHEAD; c>=FIRST_CYCLE; c--) o += `<option value="${c}" ${c===cyc()?'selected':''}>Cycle ${cycLabel(c)}${c===curCycle()?' (en cours)':''}</option>`;
   return o;
 }
 
@@ -614,7 +615,7 @@ function settingsView(){
   const f = (id,l,v,min,max) => `<div class="field"><label for="${id}">${l}</label><input type="number" id="${id}" value="${v}" min="${min}" max="${max}"></div>`;
   return `<section class="card"><h2>Réglages du suivi</h2>
     <div class="form-grid" style="margin-top:12px">
-      <div class="field"><label for="set-cycle">Cycle ouvert par défaut (juin → mai)</label><select id="set-cycle">${[cy-2,cy-1,cy,cy+1].map(c => `<option value="${c}" ${s.cycle===c?'selected':''}>${cycLabel(c)}</option>`).join('')}</select></div>
+      <div class="field"><label for="set-cycle">Cycle ouvert par défaut (juin → mai)</label><select id="set-cycle">${Array.from({length:LAST_AHEAD+3}, (_,i) => cy-2+i).map(c => `<option value="${c}" ${s.cycle===c?'selected':''}>${cycLabel(c)}</option>`).join('')}</select></div>
       ${f('set-plafond','Plafond annuel (jours)',s.plafond,1,366)}
       ${f('set-cp','CP par défaut sur le cycle',s.cp,0,60)}${f('set-rtt','RTT par défaut sur le cycle',s.rtt,0,30)}
       ${f('set-preavis',"Préavis d'alerte entretien (jours)",s.preavis,0,365)}
