@@ -571,9 +571,9 @@ function historyCard(h){
   const cs = h || {}, list = Object.keys(cs).map(Number).sort((a,b) => b-a);
   if(!list.length) return '';
   return `<section class="card" aria-labelledby="hist-h"><h3 id="hist-h">Historique des cycles</h3>
-    <table class="hist" style="margin-top:8px"><thead><tr><th>Cycle</th><th class="r">Réalisés</th><th class="r">Projection</th><th class="r">CP</th><th class="r">RTT</th><th></th></tr></thead><tbody>
+    <div class="tablewrap"><table class="hist" style="margin-top:8px"><thead><tr><th>Cycle</th><th class="r">Réalisés</th><th class="r">Projection</th><th class="r">CP</th><th class="r">RTT</th><th></th></tr></thead><tbody>
     ${list.map(c => { const e = cs[c]; return `<tr><td>${cycLabel(c)}</td><td class="r num">${nf(e.real||0)}</td><td class="r num">${nf(e.proj||0)}</td><td class="r num">${e.cp||0}</td><td class="r num">${e.rtt||0}</td><td class="r">${c===cyc()?'<span class="pill info">Affiché</span>':`<button class="btn small" data-act="goto-cycle" data-v="${c}">Ouvrir</button>`}</td></tr>`; }).join('')}
-    </tbody></table></section>`;
+    </tbody></table></div></section>`;
 }
 function employeeView(ctx){
   const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
@@ -681,15 +681,15 @@ function teamView(){
     <div class="field"><label for="f-st">Statut</label><select id="f-st" data-filter="fStatus"><option value="">Tous</option>${Object.entries(STATUS).map(([k2,l]) => `<option value="${k2}" ${S.fStatus===k2?'selected':''}>${l}</option>`).join('')}</select></div>
     ${S.isAdmin ? `<div class="field"><label for="f-arch">Affichage</label><select id="f-arch" data-filter="showArchived"><option value="">Collaborateurs actifs</option><option value="1" ${S.showArchived?'selected':''}>Collaborateurs retirés</option></select></div>` : ''}
   </div>
-  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r" title="Projection du cycle complet au rythme normal (CP et RTT pris)">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
+  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table class="team"><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r" title="Projection du cycle complet au rythme normal (CP et RTT pris)">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
     ${rows.map(r => `<tr data-act="open" data-v="${esc(r.uid)}" tabindex="0">
-      <td><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
-      <td>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></td>
-      <td class="r num">${r.started?nf(r.sum.real):'—'}</td>
-      <td class="r num">${r.started && r.sum.coded>=MIN_CODED?`${nf(r.pj.withRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.withRtt/r.al.plafond*100)}%"></i></span><small class="muted">sans RTT restants : ${nf(r.pj.noRtt)}</small>`:`— / ${r.al.plafond}`}</td>
-      <td class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
-      <td><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
-      <td><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
+      <td data-label="Collaborateur"><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
+      <td data-label="Restaurant · N+1"><div>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></div></td>
+      <td data-label="Réalisés" class="r num">${r.started?nf(r.sum.real):'—'}</td>
+      <td data-label="Projection" class="r num">${r.started && r.sum.coded>=MIN_CODED?`<span class="pv">${nf(r.pj.withRtt)} / ${r.al.plafond}</span><span class="mini"><i style="width:${Math.min(100,r.pj.withRtt/r.al.plafond*100)}%"></i></span><small class="muted">sans RTT restants : ${nf(r.pj.noRtt)}</small>`:`— / ${r.al.plafond}`}</td>
+      <td data-label="CP" class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td data-label="RTT" class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
+      <td data-label="Statut"><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
+      <td data-label="Alertes"><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
     </tbody></table></div>` : `<div class="empty"><b>${all.length ? 'Aucun résultat' : (S.showArchived ? 'Aucun collaborateur retiré' : 'Aucun collaborateur pour l\'instant')}</b>${all.length ? 'Modifiez les filtres.' : (S.showArchived ? '' : 'Ajoutez les directeurs et cadres au forfait jours avec le bouton ci-dessus.')}</div>`}
   </section>${heatTable(rows)}`;
 }

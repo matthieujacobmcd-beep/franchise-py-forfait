@@ -202,3 +202,38 @@ td.r,th.r{text-align:right}
 .bars i.stk span.est{background:repeating-linear-gradient(135deg,var(--accent-soft) 0 5px,transparent 5px 10px);outline:1px solid var(--accent);outline-offset:-1px}
 @media print{.rpt .rest{font-size:18px;margin:0 0 4px}}
 .bars i.stk span.est{min-height:0}
+
+/* ---------- petits écrans ---------- */
+@media (max-width:700px){
+  body{padding-inline:12px}
+  header.top{position:static;margin-inline:-12px;padding-inline:12px}
+  .top-row{gap:10px}
+  .who{width:100%;flex-wrap:wrap}
+  .who select.cyc{flex:1 1 100%;width:100%}
+  .who span{flex:1 1 0;max-width:none}
+  .who .btn{white-space:nowrap}
+  .big{font-size:38px}
+  .card{padding:14px}
+  table.team{min-width:0}
+  table.team thead{display:none}
+  table.team tbody,table.team tr,table.team td{display:block;width:100%}
+  table.team tr{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:6px 12px;background:var(--surface)}
+  table.team td{border:0;padding:6px 0;display:flex;justify-content:space-between;align-items:center;gap:12px;text-align:right}
+  table.team td::before{content:attr(data-label);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;flex:none}
+  table.team td:first-child{display:block;text-align:left;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  table.team td:first-child::before{display:none}
+  table.team td .mini{display:none}
+  table.team td .pv{white-space:nowrap}
+  table.team td{flex-wrap:wrap}
+  table.team td small.muted{flex:1 0 100%;text-align:right;white-space:normal}
+  table.team td>div{text-align:right}
+  table.team .chips{justify-content:flex-end}
+  .day{min-height:46px;padding:3px 4px}
+  .cal{gap:3px;grid-template-columns:28px repeat(7,minmax(0,1fr))}
+  .brush{padding:4px 8px;font-size:12px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  input,select,textarea{font-size:16px}
+}
+@media (min-width:701px) and (max-width:1000px){
+  .grid2{grid-template-columns:minmax(0,1fr)}
+}
