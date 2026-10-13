@@ -588,7 +588,7 @@ function employeeView(ctx){
 
 function teamRows(){
   const c = cyc();
-  const base = S.isAdmin ? Object.keys(S.hr) : [...S.consultIds];
+  const base = S.isAdmin ? Object.keys(S.hr).filter(u => S.hr[u].role !== 'lecteur') : [...S.consultIds].filter(u => S.hr[u] && S.hr[u].role !== 'lecteur');
   const ids = base.filter(u => S.hr[u] && (S.isAdmin ? (S.showArchived ? S.hr[u].actif===false : S.hr[u].actif!==false) : true));
   const rows = ids.map(uid => {
     const hr = S.hr[uid], al = alloc(hr), doc = S.allDocs[uid] || emptyCycle();
@@ -648,7 +648,7 @@ function heatTable(rows){
 }
 
 function quotasCard(){
-  const c = cyc(), list = Object.entries(S.hr).filter(([,h]) => h.actif!==false).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
+  const c = cyc(), list = Object.entries(S.hr).filter(([,h]) => h.actif!==false && h.role!=='lecteur').sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
   if(!list.length) return '';
   const inp = (id,v,ph,max) => `<input type="number" id="${id}" value="${v ?? ''}" placeholder="${ph}" min="0" max="${max}" style="width:90px">`;
   return `<section class="card"><h2>Quotas individuels · cycle ${cycLabel(c)}</h2>
@@ -660,9 +660,18 @@ function quotasCard(){
     <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save-quotas">Enregistrer les quotas</button></div></section>`;
 }
 
+function consultCard(){
+  const list = Object.entries(S.hr).filter(([,h]) => h.role==='lecteur' && (S.showArchived ? h.actif===false : h.actif!==false)).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
+  if(!S.isAdmin || !list.length) return '';
+  return `<section class="card"><h2>Accès de consultation (${list.length})</h2>
+    <p class="muted" style="margin:6px 0 0">Profils « Lecteur » : ils consultent tous les plannings, sans saisir de forfait jours.</p>
+    <div class="tablewrap" style="margin-top:10px"><table style="min-width:0"><tbody>
+    ${list.map(([uid,h]) => `<tr data-act="open" data-v="${esc(uid)}" tabindex="0"><td><div class="person"><img src="${esc(avatarOf(uid))}" alt=""><div><b>${esc(h.nom)}</b><small>${esc([h.fonction, h.restaurant].filter(Boolean).join(' · ') || 'Lecteur')}</small></div></div></td><td>${esc(h.email || 'Adresse e-mail à renseigner')}</td></tr>`).join('')}
+    </tbody></table></div></section>`;
+}
 function teamView(){
   const { all, rows } = teamRows();
-  const act = S.isAdmin ? Object.values(S.hr).filter(h => h.actif!==false).length : all.length;
+  const act = S.isAdmin ? Object.values(S.hr).filter(h => h.actif!==false && h.role!=='lecteur').length : all.length;
   const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch'||r.m.status==='rtt').length,
     over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&(r.sum.maxStreak>=7||r.sum.issues.length||r.late.length)).length };
   const rests = [...new Set(all.map(r => r.hr.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
@@ -691,7 +700,7 @@ function teamView(){
       <td data-label="Statut"><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
       <td data-label="Alertes"><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
     </tbody></table></div>` : `<div class="empty"><b>${all.length ? 'Aucun résultat' : (S.showArchived ? 'Aucun collaborateur retiré' : 'Aucun collaborateur pour l\'instant')}</b>${all.length ? 'Modifiez les filtres.' : (S.showArchived ? '' : 'Ajoutez les directeurs et cadres au forfait jours avec le bouton ci-dessus.')}</div>`}
-  </section>${heatTable(rows)}`;
+  </section>${heatTable(rows)}${consultCard()}`;
 }
 
 function consultDetailView(){
@@ -714,9 +723,9 @@ function detailView(){
       <div class="field"><label for="hr-categorie">Catégorie</label><select id="hr-categorie"><option value="">—</option>${['Directeur','Cadre'].map(x=>`<option ${hr.categorie===x?'selected':''}>${x}</option>`).join('')}</select></div>
       ${f('hr-restaurant','Restaurant',hr.restaurant||'','text','maxlength="80"')}${f('hr-n1','N+1 (responsable)',hr.n1||'','text','maxlength="80"')}
       <div class="field"><label for="hr-role">Droits</label><select id="hr-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}" ${(hr.role||'employe')===k?'selected':''}>${l}</option>`).join('')}</select></div>
-      ${f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
-      ${f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
-      ${f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
+      ${hr.role==='lecteur' ? '' : f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
+      ${hr.role==='lecteur' ? '' : f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
+      ${hr.role==='lecteur' ? '' : f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
     </div>
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="save-hr">Enregistrer la fiche</button>
@@ -727,6 +736,7 @@ function detailView(){
     </div>
     <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
   const doc = S.allDocs[uid] || emptyCycle();
+  if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit tous les plannings en lecture seule et n'a pas de forfait jours à saisir.</p>`;
   return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
 }
 
@@ -952,7 +962,7 @@ async function changeCycle(c){
   try { await loadData(); } catch(e){ toast(msg(e)); }
   S.loading = false; render();
 }
-const numOrNull = id => { const v = document.getElementById(id).value.trim(); return v==='' ? null : Number(v); };
+const numOrNull = id => { const el = document.getElementById(id); if(!el) return null; const v = el.value.trim(); return v==='' ? null : Number(v); };
 const emailOrNull = id => { const v = document.getElementById(id).value.trim().toLowerCase(); return v || null; };
 
 $app.addEventListener('submit', async ev => {
@@ -1046,7 +1056,7 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='goto-cycle'){ changeCycle(Number(v)); }
   else if(act==='save-quotas'){
-    const rows = Object.entries(S.hr).filter(([,h]) => h.actif!==false).map(([id]) => ({ collaborateur_id:id, cycle:c, plafond:numOrNull('q-p-'+id), cp:numOrNull('q-c-'+id), rtt:numOrNull('q-r-'+id) }));
+    const rows = Object.entries(S.hr).filter(([,h]) => h.actif!==false && h.role!=='lecteur').map(([id]) => ({ collaborateur_id:id, cycle:c, plafond:numOrNull('q-p-'+id), cp:numOrNull('q-c-'+id), rtt:numOrNull('q-r-'+id) }));
     enqueue(async () => { await upsertChunks('quotas', rows, 'collaborateur_id,cycle'); await loadData(); render(); toast('Quotas enregistrés.'); });
   }
   else if(act==='open'){ S.viewUid=v; S.mi = defaultMonthIndex(c); render(); if(S.isAdmin) loadHistory(v).then(safeRender).catch(() => {}); }
@@ -1064,7 +1074,7 @@ $app.addEventListener('click', ev => {
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt') };
-    enqueue(async () => { await dbDo(sb.from('collaborateurs').update(row).eq('id',uid)); await upsertChunks('quotas',[q],'collaborateur_id,cycle'); await loadData(); render(); toast('Fiche enregistrée.'); });
+    enqueue(async () => { await dbDo(sb.from('collaborateurs').update(row).eq('id',uid)); if(row.role!=='lecteur') await upsertChunks('quotas',[q],'collaborateur_id,cycle'); await loadData(); render(); toast('Fiche enregistrée.'); });
   }
   else if(act==='archive' || act==='restore'){
     const uid = S.viewUid;

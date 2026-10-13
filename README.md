@@ -54,7 +54,7 @@ Ajout, retrait (historique conservé) et suppression définitive se font depuis 
 |---|---|---|
 | Salarié | son propre planning | saisir, valider et signer ses mois |
 | Superviseur | son planning + le planning des **directeurs** (lecture seule) | consulter, sans modifier |
-| Lecteur | **tous** les plannings (lecture seule) | consulter uniquement, sans planning personnel |
+| Lecteur | **tous** les plannings (lecture seule) | consulter uniquement : pas de forfait jours, absent des statistiques du suivi 218 jours |
 | Administrateur (DRH) | tout | modifier les plannings, quotas, fiches, viser et rouvrir les mois |
 
 - Les superviseurs et lecteurs n'accèdent ni aux adresses e-mail, ni aux entretiens, ni aux déclarations de validation. Les arrêts maladie et accidents du travail leur apparaissent sous le code neutre « ABS ». Ce filtrage est fait par la base de données (fonctions `consultation_*`).
