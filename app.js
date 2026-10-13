@@ -391,11 +391,11 @@ function header(){
 
 
 function summaryCard(sum, al, m, pj){
-  const proj = pj.noRtt, scale = Math.max(al.plafond, proj, sum.real) * 1.04 || 1;
-  const w = Math.min(100, sum.real/scale*100), p = Math.min(100, proj/scale*100), cap = al.plafond/scale*100;
+  const partial = sum.coded < MIN_CODED, proj = pj.noRtt, scale = Math.max(al.plafond, partial ? 0 : proj, sum.real) * 1.04 || 1;
+  const w = Math.min(100, sum.real/scale*100), p = partial ? 0 : Math.min(100, proj/scale*100), cap = al.plafond/scale*100;
   return `<section class="card raised" aria-labelledby="sum-h">
     <div class="row between"><h3 id="sum-h">Jours travaillés · cycle ${cycLabel(cyc())}</h3><span class="pill ${m.status}">${STATUS[m.status]}</span></div>
-    <div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours</small></div>
+    ${partial ? `<div class="big num" style="margin-top:10px">—<small>pas assez de jours saisis pour projeter (${sum.coded} sur ${MIN_CODED} minimum)</small></div>` : `<div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours</small></div>`}
     <div class="meter" role="img" aria-label="${nf(sum.real)} jours réalisés, ${nf(proj)} projetés sur le cycle complet, plafond ${al.plafond}">
       <div class="p" style="width:${p}%"></div><div class="w" style="width:${w}%"></div>
       <div class="cap" style="left:${cap}%"><b>${al.plafond}</b></div>
@@ -403,7 +403,7 @@ function summaryCard(sum, al, m, pj){
     <div class="meter-legend"><span><i style="background:var(--accent)"></i>Réalisés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Projection du cycle complet</span></div>
     <dl class="facts">
       <div><dt>Réalisés à ce jour</dt><dd>${nf(sum.real)} j</dd></div>
-      <div><dt>Marge sur le plafond</dt><dd>${m.reste>=0?nf(m.reste):'−'+nf(-m.reste)} j</dd></div>
+      <div><dt>Marge sur le plafond</dt><dd>${partial ? '—' : (m.reste>=0?nf(m.reste):'−'+nf(-m.reste))+' j'}</dd></div>
       <div><dt>CP planifiés</dt><dd>${sum.cp} / ${al.cp}</dd></div>
       <div><dt>RTT planifiés</dt><dd>${sum.rtt} / ${al.rtt}</dd></div>
       <div><dt>Jours OFF</dt><dd>${sum.off}</dd></div>
@@ -422,10 +422,10 @@ function summaryCard(sum, al, m, pj){
 }
 
 function projectionCard(sum, al, m, pj){
-  const over = pj.noRtt - al.plafond;
+  const over = pj.noRtt - al.plafond, partial = sum.coded < MIN_CODED, v = x => partial ? '—' : x;
   let advice;
   if(sum.coded < MIN_CODED){
-    advice = `<p class="note info">Planning trop partiel pour une projection fiable (${sum.coded} jour(s) saisi(s) sur le cycle). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez vos CP et vos RTT : l'estimation ci-dessus est provisoire.</p>`;
+    advice = `<p class="note info">Planning trop partiel pour projeter (${sum.coded} jour(s) saisi(s), ${MIN_CODED} minimum). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez les CP et les RTT : la projection s'affichera ensuite.</p>`;
   } else if(over > 0){
     advice = pj.withRtt <= al.plafond
       ? `<p class="note">Dépassement de ${over} jour(s) si les ${pj.rttLeft} RTT restants ne sont pas pris. En les posant (en ${pj.sessions} fois minimum, 2 RTT consécutifs au maximum), la projection passe à ${pj.withRtt} jours : dans le plafond.</p>`
@@ -436,17 +436,18 @@ function projectionCard(sum, al, m, pj){
   return `<section class="card" aria-labelledby="pj-h"><h3 id="pj-h">Projection du cycle complet</h3>
     <dl class="facts">
       <div><dt>Jours planifiés (réel, sinon prévu)</dt><dd>${pj.planned} j</dd></div>
-      <div><dt>Jours non planifiés, estimés</dt><dd>${pj.est} j</dd></div>
-      <div><dt>CP restants (${pj.cpLeft})</dt><dd>− ${pj.cpDays} j</dd></div>
-      <div><dt>Projection sans les RTT restants</dt><dd>${pj.noRtt} j</dd></div>
-      <div><dt>RTT restants à prendre</dt><dd>− ${pj.rttLeft} j</dd></div>
-      <div><dt>Projection avec tous les RTT pris</dt><dd>${pj.withRtt} j</dd></div>
+      <div><dt>Jours non planifiés, estimés</dt><dd>${v(pj.est+' j')}</dd></div>
+      <div><dt>CP restants (${pj.cpLeft})</dt><dd>${v('− '+pj.cpDays+' j')}</dd></div>
+      <div><dt>Projection sans les RTT restants</dt><dd>${v(pj.noRtt+' j')}</dd></div>
+      <div><dt>RTT restants à prendre</dt><dd>${v('− '+pj.rttLeft+' j')}</dd></div>
+      <div><dt>Projection avec tous les RTT pris</dt><dd>${v(pj.withRtt+' j')}</dd></div>
     </dl>
     <div class="val-list" style="margin-top:14px">${advice}</div>
     <p class="muted" style="font-size:12px;margin:10px 0 0">Hypothèses : les jours sans saisie sont estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF) ; un CP en jours ouvrables retire 5/6 de jour travaillé ; un RTT retire 1 jour, par prises de 2 consécutifs au maximum.</p></section>`;
 }
 
-function monthsChart(pj){
+function monthsChart(pj, partial){
+  if(partial) return '';
   const ms = cycleMonths(cyc()), tot = ms.map((_,i) => pj.perP[i] + pj.perE[i]), mx = Math.max(23, ...tot);
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   return `<section class="card" aria-labelledby="bars-h"><h3 id="bars-h">Jours travaillés par mois (projection)</h3>
@@ -562,7 +563,7 @@ function employeeView(ctx){
   const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
   S.verCtx = { uid:ctx.uid, doc:ctx.doc };
   return `<div class="grid2">
-    <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj)}${historyCard(S.history[ctx.uid])}</div>
+    <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj, sum.coded < MIN_CODED)}${historyCard(S.history[ctx.uid])}</div>
     <div class="stack">${calendarCard(ctx)}${consult ? '' : validationCard(ctx)}${consult ? '' : downloadCard()}</div></div>`;
 }
 
