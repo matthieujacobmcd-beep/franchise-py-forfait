@@ -645,10 +645,10 @@ function loginView(){
     <div class="row"><button class="btn primary" type="submit">Se connecter</button><button class="btn small" type="button" data-act="auth-to-code">Première connexion ou mot de passe oublié</button></div></form>`);
   if(a.step===1) return wrap(`<h2>Première connexion</h2><p class="muted" style="margin:6px 0 14px">Saisissez votre adresse e-mail. Vous recevrez un message avec un lien de connexion : il vous permettra de créer votre mot de passe.</p>
     <form data-form="send" class="val-list" style="margin:0">${field('au-email','Adresse e-mail','email',`autocomplete="username" required value="${esc(a.email)}"`)}
-    <div class="row"><button class="btn primary" type="submit">Recevoir le code</button><button class="btn small" type="button" data-act="auth-to-login">Retour</button></div></form>`);
+    <div class="row"><button class="btn primary" type="submit">Recevoir le lien</button><button class="btn small" type="button" data-act="auth-to-login">Retour</button></div></form>`);
   if(a.step===2) return wrap(`<h2>Consultez votre messagerie</h2><p class="muted" style="margin:6px 0 14px">Message envoyé à ${esc(a.email)}. Cliquez sur le lien qu'il contient (vérifiez les courriers indésirables). Si le message contient un code à 6 chiffres, saisissez-le ci-dessous.</p>
     <form data-form="verify" class="val-list" style="margin:0">${field('au-code','Code à 6 chiffres','text','inputmode="numeric" autocomplete="one-time-code" maxlength="8" required')}
-    <div class="row"><button class="btn primary" type="submit">Valider le code</button><button class="btn small" type="button" data-act="auth-to-code">Renvoyer un code</button></div></form>`);
+    <div class="row"><button class="btn primary" type="submit">Valider le code</button><button class="btn small" type="button" data-act="auth-to-code">Renvoyer le message</button></div></form>`);
   return wrap(`<h2>Choisissez votre mot de passe</h2><p class="muted" style="margin:6px 0 14px">12 caractères minimum. Utilisez une phrase que vous seul connaissez.</p>
     <form data-form="setpwd" class="val-list" style="margin:0">${field('au-new','Nouveau mot de passe','password','autocomplete="new-password" minlength="12" required')}${field('au-new2','Confirmation','password','autocomplete="new-password" minlength="12" required')}
     <div class="row"><button class="btn primary" type="submit">Enregistrer et continuer</button></div></form>`);
