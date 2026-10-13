@@ -1,7 +1,7 @@
 # Franchise PY · Suivi du forfait 218 jours
 
 Application web (cycle juin → mai) pour les directeurs et cadres au forfait jours.
-- Chaque salarié se connecte avec son adresse e-mail et ne voit que son planning (prévu / réel, CP, RTT, validation mensuelle signée, sans questionnaire).
+- Chaque salarié se connecte avec son adresse e-mail et ne voit que son planning (prévu / réel, CP, RTT, validation mensuelle signée avec déclarations de repos et de charge de travail).
 - La DRH (administrateurs) voit toute l'équipe, gère les fiches et les quotas individuels (jours à travailler, CP, RTT), vise les mois et exporte en CSV.
 - Hébergement : pages statiques (GitHub Pages) + base et authentification **Supabase** (région Europe).
   La sécurité repose sur la RLS de la base, pas sur le code de la page.
@@ -60,7 +60,7 @@ Ajout, retrait (historique conservé) et suppression définitive se font depuis 
 
 ## Limites à connaître
 - La signature est une **signature électronique simple** (dessin, identité vérifiée par e-mail, horodatage serveur, empreinte SHA-256 du contenu). Elle prouve qui a validé et quand, sans valeur de signature qualifiée.
-- Aucun questionnaire (charge de travail, repos, qualité de vie au travail) : ces suivis se font ailleurs. Les seuls éléments liés à la santé sont les codes **AM** (arrêt maladie) et **AT** (accident du travail) saisis sur le planning, sans motif ni pièce médicale. Ils restent des informations sensibles : le salarié ne voit que les siens, seule la DRH voit ceux de l'équipe. Mentionnez-les dans votre registre RGPD, informez les salariés et conservez les données selon votre politique. Hébergement en Europe.
+- La validation mensuelle comprend un court questionnaire (repos quotidien de 11 h, repos hebdomadaire de 35 h, charge de travail, commentaire libre). Ces réponses et les codes **AM** (arrêt maladie) et **AT** (accident du travail) sont des informations sensibles : le salarié ne voit que les siennes, seule la DRH voit celles de l'équipe. Mentionnez-les dans votre registre RGPD, informez les salariés et conservez les données selon votre politique. Hébergement en Europe.
 - Si une personne n'a pas confirmé son adresse e-mail, elle n'accède à rien : c'est voulu.
 
 ## Pour aller plus loin

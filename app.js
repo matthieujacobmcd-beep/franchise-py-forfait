@@ -25,7 +25,7 @@ const S = {
   settings:{...DEF}, cycle:DEF.cycle, myHr:null, hr:{}, allDocs:{}, history:{},
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
-  viewUid:null, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
+  viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
   adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
@@ -99,12 +99,13 @@ function summarize(doc, c){
     if(e==='JT'){ streak = (last && dayDiff(last,iso)===1) ? streak+1 : 1; last = iso; max = Math.max(max,streak); }
     else { last=null; streak=0; }
   }
-  const validated=[];
+  const validated=[], issues=[];
   for(const ym of Object.keys(months)){
     const m = months[ym]; if(!m || !m.valide) continue;
     validated.push(ym);
+    if(m.r11===false || m.r35===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
-  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, maxStreak:max, per, validated:validated.sort() };
+  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, maxStreak:max, per, validated:validated.sort(), issues:issues.sort() };
 }
 function alloc(hr){
   const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {};
@@ -138,9 +139,9 @@ async function sha256(str){
   try { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join(''); }
   catch(e){ return ''; }
 }
-function canonical(doc, uid, ym){
+function canonical(doc, uid, ym, rec){
   const pick = o => Object.keys(o||{}).filter(k => k.startsWith(ym) && o[k]).sort().map(k => k+'='+o[k]).join(',');
-  return JSON.stringify([uid, ym, pick(doc.prev), pick(doc.reel)]);
+  return JSON.stringify([uid, ym, pick(doc.prev), pick(doc.reel), rec.r11!==false, rec.r35!==false, rec.charge||'ok', rec.comment||'']);
 }
 function sigSvg(sig){
   if(!sig || !sig.strokes) return '';
@@ -153,8 +154,8 @@ function sigBox(sig, role){
 }
 function signPanel(kind){
   const txt = kind==='visa'
-    ? "Je vise ce mois en tant que DRH / N+1 après examen du planning du salarié."
-    : "Je certifie l'exactitude de mon planning réel pour ce mois.";
+    ? "Je vise ce mois en tant que DRH / N+1 après examen du planning et des déclarations du salarié."
+    : "Je certifie l'exactitude de mon planning réel et de mes déclarations pour ce mois.";
   return `<div class="signpad"><b>Signature électronique</b>
     <canvas id="pad" width="480" height="160" aria-label="Zone de signature"></canvas>
     <label class="row" style="gap:8px;align-items:flex-start"><input type="checkbox" id="sign-ok" style="width:auto;margin-top:4px"><span>${txt}</span></label>
@@ -179,7 +180,7 @@ async function verifyIntegrity(){
   const el = document.getElementById('integ'); if(!el || !S.verCtx) return;
   const { uid, doc } = S.verCtx, ym = el.dataset.ym, rec = doc.months[ym];
   if(!rec || !rec.hash){ el.textContent = ''; return; }
-  const h = await sha256(canonical(doc, uid, ym));
+  const h = await sha256(canonical(doc, uid, ym, rec));
   const e2 = document.getElementById('integ'); if(!e2 || e2.dataset.ym!==ym) return;
   e2.innerHTML = h && h===rec.hash ? '<span class="pill ok">Contenu inchangé depuis la signature</span>' : '<span class="pill dep">Planning modifié depuis la signature</span>';
 }
@@ -213,7 +214,7 @@ async function fetchPages(make){
 function buildDocs(jours, vals){
   const docs = {}, get = id => docs[id] || (docs[id] = emptyCycle());
   for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; }
-  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
+  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, charge:v.charge, comment:v.commentaire||'', at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
   return docs;
 }
 function buildHr(rows, quotas){
@@ -369,6 +370,7 @@ function summaryCard(sum, al, m){
       ${m.toRest>0 ? `<p class="note">À ce rythme vous travaillerez ${nf(m.toRest)} jour(s) de trop. Passez-en en OFF, RTT ou CP.</p>` : ''}
       ${sum.blank>0 ? `<p class="note info">${sum.blank} jour(s) du cycle ne sont pas encore planifiés.</p>` : ''}
       ${(sum.cp!==al.cp || sum.rtt!==al.rtt) ? `<p class="note info">Quota défini par la DRH : ${al.cp} CP et ${al.rtt} RTT. Vous en avez planifié ${sum.cp} et ${sum.rtt}.</p>` : ''}
+      ${sum.maxStreak>=7 ? `<p class="note">${sum.maxStreak} jours travaillés d'affilée sont planifiés. Un repos hebdomadaire de 35 heures consécutives est obligatoire.</p>` : ''}
     </div>
   </section>`;
 }
@@ -437,9 +439,14 @@ function validationCard(ctx){
   const c = cyc(), mo = cycleMonths(c)[S.mi], ym = mo.ym, rec = ctx.doc.months[ym] || {};
   const label = `${MONTHS[mo.m].toLowerCase()} ${mo.y}`;
   if(rec.valide){
+    const bad = rec.r11===false || rec.r35===false || (rec.charge && rec.charge!=='ok');
     return `<section class="card" aria-labelledby="val-h"><div class="row between"><h3 id="val-h">Validation de ${label}</h3>
-      <span class="row"><span class="pill ok">Validé</span>${rec.visa ? `<span class="pill info">Visé DRH/N+1</span>`:''}</span></div>
+      <span class="row"><span class="pill ${bad?'watch':'ok'}">${bad?'Validé avec réserve':'Validé'}</span>${rec.visa ? `<span class="pill info">Visé DRH/N+1</span>`:''}</span></div>
       <div class="val-list">
+        <div>Repos quotidien de 11 h : <b>${rec.r11===false?'non respecté':'respecté'}</b></div>
+        <div>Repos hebdomadaire de 35 h : <b>${rec.r35===false?'non respecté':'respecté'}</b></div>
+        <div>Charge de travail : <b>${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}</b></div>
+        ${rec.comment ? `<div class="muted">« ${esc(rec.comment)} »</div>` : ''}
         <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>
         <div id="integ" data-ym="${ym}"></div>
         ${rec.hash ? `<small class="muted num" style="word-break:break-all">Empreinte SHA-256 : ${esc(rec.hash)}</small>` : ''}
@@ -450,9 +457,16 @@ function validationCard(ctx){
   const future = new Date(mo.y,mo.m,1) > nowD, t = todayIso(), dim = new Date(mo.y,mo.m+1,0).getDate();
   let missing = 0;
   for(let d=1; d<=dim; d++){ const iso = isoOf(mo.y,mo.m,d); if(iso<=t && !ctx.doc.reel[iso]) missing++; }
+  const dr = S.draft[ym] || (S.draft[ym] = { r11:true, r35:true, charge:'ok', comment:'' });
+  const seg = (k, v, a, b) => `<div class="seg" role="group"><button data-act="draft" data-k="${k}" data-v="true" aria-pressed="${v!==false}">${a}</button><button class="bad" data-act="draft" data-k="${k}" data-v="false" aria-pressed="${v===false}">${b}</button></div>`;
   return `<section class="card" aria-labelledby="val-h"><h3 id="val-h">Validation de ${label}</h3>
-    <p class="muted" style="margin:6px 0 0">Chaque fin de mois, confirmez votre réel et signez électroniquement.</p>
+    <p class="muted" style="margin:6px 0 0">Chaque fin de mois, confirmez votre réel et vos conditions de repos, puis signez électroniquement.</p>
     <div class="val-list">
+      <fieldset class="q"><legend>Repos quotidien de 11 heures consécutives respecté ?</legend>${seg('r11',dr.r11,'Oui','Non')}</fieldset>
+      <fieldset class="q"><legend>Repos hebdomadaire de 35 heures consécutives respecté ?</legend>${seg('r35',dr.r35,'Oui','Non')}</fieldset>
+      <div class="field"><label for="charge">Votre charge de travail ce mois-ci</label>
+        <select id="charge" data-k="charge"><option value="ok" ${dr.charge==='ok'?'selected':''}>Raisonnable</option><option value="haute" ${dr.charge==='haute'?'selected':''}>Élevée</option><option value="excessive" ${dr.charge==='excessive'?'selected':''}>Excessive</option></select></div>
+      <div class="field"><label for="comment">Commentaire (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
       ${missing ? `<p class="note">${missing} jour(s) sans réel. Utilisez « Confirmer le prévu comme réalisé » dans la couche Réel, puis corrigez les écarts.</p>` : ''}
       ${future ? `<p class="note info">Ce mois n'a pas commencé : la validation sera possible en cours de mois.</p>` : ''}
       ${S.signing==='validate' ? signPanel('validate') : `<div><button class="btn primary" data-act="sign-open" data-v="validate" ${missing||future||!S.canWrite?'disabled':''}>Signer et valider ${label}</button></div>`}
@@ -499,6 +513,8 @@ function teamRows(){
 function alertChips(r){
   const c = [];
   if(!r.started) return `<span class="muted">${r.hr.email ? 'Aucune saisie' : 'Adresse e-mail à renseigner'}</span>`;
+  if(r.sum.maxStreak>=7) c.push(`<span class="pill dep">${r.sum.maxStreak} j d'affilée</span>`);
+  if(r.sum.issues.length) c.push(`<span class="pill watch">Repos/charge signalés</span>`);
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
   if(r.sum.blank>0) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
   if(r.iv.cls!=='ok') c.push(`<span class="pill ${r.iv.cls==='dep'?'dep':'info'}">Entretien ${r.iv.label.toLowerCase()}</span>`);
@@ -550,7 +566,7 @@ function teamView(){
   const { all, rows } = teamRows();
   const act = Object.values(S.hr).filter(h => h.actif!==false).length;
   const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch').length,
-    over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&r.late.length).length };
+    over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&(r.sum.maxStreak>=7||r.sum.issues.length||r.late.length)).length };
   const rests = [...new Set(Object.values(S.hr).map(h => h.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
   return `<div class="kpis">
     <div class="kpi"><b>${S.showArchived?all.length:act}</b><span>${S.showArchived?'Collaborateurs retirés':'Collaborateurs suivis'}</span></div>
@@ -773,7 +789,7 @@ function reportMonth(uid, doc, hr){
     return `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${p||'—'}</td><td>${r||'—'}</td><td>${esc(hol[iso]||'')}</td></tr>`; }).join('');
   const tally = {}; for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(e) tally[e] = (tally[e]||0)+1; }
   const sig = rec.valide
-    ? `<p>Mois validé et signé électroniquement par <b>${esc(rec.sig && rec.sig.name || hr.nom)}</b>${rec.at ? ' le '+fmtDate(rec.at.slice(0,10)) : ''}. ${rec.visa ? 'Visé par '+esc(rec.visa.name||'la DRH')+(rec.visa.at ? ' le '+fmtDate(rec.visa.at.slice(0,10)) : '')+'.' : 'Non visé.'}</p>
+    ? `<p>Déclarations du salarié : repos quotidien de 11 h ${rec.r11===false?'non respecté':'respecté'} · repos hebdomadaire de 35 h ${rec.r35===false?'non respecté':'respecté'} · charge de travail ${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}${rec.comment ? ' · « '+esc(rec.comment)+' »' : ''}.</p><p>Mois validé et signé électroniquement par <b>${esc(rec.sig && rec.sig.name || hr.nom)}</b>${rec.at ? ' le '+fmtDate(rec.at.slice(0,10)) : ''}. ${rec.visa ? 'Visé par '+esc(rec.visa.name||'la DRH')+(rec.visa.at ? ' le '+fmtDate(rec.visa.at.slice(0,10)) : '')+'.' : 'Non visé.'}</p>
        <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>${rec.hash ? `<p><small>Empreinte SHA-256 : ${esc(rec.hash)}</small></p>` : ''}`
     : `<p>Mois non validé.</p>`;
   return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
@@ -813,11 +829,11 @@ let toastTimer;
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),4200); }
 const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
 function exportCsv(){
-  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection du cycle','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Entretien']];
+  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection du cycle','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Jours consécutifs max','Repos/charge signalés','Entretien']];
   for(const r of teamRows().rows){
-    rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.sum.proj:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.iv.label]);
+    rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.sum.proj:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.started?r.sum.maxStreak:'', r.started?(r.sum.issues.length?'oui':'non'):'', r.iv.label]);
   }
-  saveBlob(`forfait-jours-equipe-${cycLabel(cyc())}.xlsx`, makeXlsx([{ name:'Équipe', rows, widths:[26,30,24,12,18,18,9,14,18,13,13,13,13,10,16,28,13,16,16] }]));
+  saveBlob(`forfait-jours-equipe-${cycLabel(cyc())}.xlsx`, makeXlsx([{ name:'Équipe', rows, widths:[26,30,24,12,18,18,9,14,18,13,13,13,13,10,16,28,13,16,14,16,16] }]));
 }
 function defaultFor(d, hol){ const iso = toIso(d); return hol[iso] ? 'JF' : (d.getDay()===0||d.getDay()===6) ? 'OFF' : 'JT'; }
 async function changeCycle(c){
@@ -894,6 +910,7 @@ $app.addEventListener('click', ev => {
     for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d); if(iso<=t && !doc.reel[iso] && doc.prev[iso]) map[iso] = doc.prev[iso]; }
     if(Object.keys(map).length) setCodes('reel', map); else toast('Rien à confirmer : le prévu est déjà reporté en réel ou vide.');
   }
+  else if(act==='draft'){ S.draft[mo.ym] = { ...(S.draft[mo.ym]||{r11:true,r35:true,charge:'ok',comment:''}), [el.dataset.k]: v==='true' }; render(); }
   else if(act==='sign-open'){ S.signing=v; padStrokes=[]; render(); }
   else if(act==='sign-cancel'){ S.signing=null; padStrokes=[]; render(); }
   else if(act==='sign-clear'){ padStrokes=[]; render(); }
@@ -904,8 +921,10 @@ $app.addEventListener('click', ev => {
     S.signing=null; padStrokes=[];
     enqueue(async () => {
       if(kind==='validate'){
-        const hash = await sha256(canonical(S.myCycle, S.uid, mo.ym));
-        await dbDo(sb.from('validations').upsert({ collaborateur_id:S.uid, mois:mo.ym, valide:true, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
+        const dr = S.draft[mo.ym] || {r11:true,r35:true,charge:'ok',comment:''};
+        const rec = { r11:dr.r11!==false, r35:dr.r35!==false, charge:dr.charge||'ok', comment:(dr.comment||'').trim() };
+        const hash = await sha256(canonical(S.myCycle, S.uid, mo.ym, rec));
+        await dbDo(sb.from('validations').upsert({ collaborateur_id:S.uid, mois:mo.ym, valide:true, r11:rec.r11, r35:rec.r35, charge:rec.charge, commentaire:rec.comment, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
         await loadData(); render(); toast('Mois signé et validé.');
       } else if(kind==='visa'){
         const uid = S.viewUid, base = ((S.allDocs[uid]||emptyCycle()).months[mo.ym]) || {};
@@ -972,7 +991,8 @@ $app.addEventListener('click', ev => {
 $app.addEventListener('keydown', ev => { if((ev.key==='Enter'||ev.key===' ') && ev.target.matches('tr[data-act="open"]')){ ev.preventDefault(); ev.target.click(); } });
 $app.addEventListener('input', ev => {
   const t = ev.target;
-  if(t.dataset.filter==='fQ'){ S.fQ=t.value; const pos=t.selectionStart; render(); const n=document.getElementById('f-q'); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }
+  if(t.dataset.k){ const ym = cycleMonths(cyc())[S.mi].ym; S.draft[ym] = { ...(S.draft[ym]||{r11:true,r35:true,charge:'ok',comment:''}), [t.dataset.k]: t.value }; }
+  else if(t.dataset.filter==='fQ'){ S.fQ=t.value; const pos=t.selectionStart; render(); const n=document.getElementById('f-q'); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }
 });
 $app.addEventListener('change', ev => {
   const t = ev.target;
