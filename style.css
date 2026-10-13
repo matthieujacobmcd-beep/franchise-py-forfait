@@ -61,6 +61,7 @@ h3{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:.08em;color:v
 .pill.ok{background:var(--ok-bg);color:var(--ok)}
 .pill.watch{background:var(--warn-bg);color:var(--warn)}
 .pill.risk{background:var(--warn-bg);color:var(--warn);outline:1px solid var(--warn)}
+.pill.rtt{background:var(--info-bg);color:var(--info)}
 .pill.dep{background:var(--crit-bg);color:var(--crit)}
 .pill.info{background:var(--info-bg);color:var(--info)}
 .pill.none{background:var(--soft);color:var(--muted)}

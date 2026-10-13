@@ -136,11 +136,12 @@ function metrics(sum, al, pj){
   if(sum.coded < MIN_CODED && sum.real <= al.plafond) return { status:'none', reste:al.plafond-p, toRest:0 };
   let status='ok';
   if(sum.real>al.plafond) status='dep';
-  else if(p>al.plafond) status='risk';
+  else if((pj ? pj.withRtt : sum.proj) > al.plafond) status='risk';
+  else if(p>al.plafond) status='rtt';
   else if(sum.blank>0 || sum.cp!==al.cp || sum.rtt!==al.rtt) status='watch';
   return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
-const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer' };
+const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT à poser' };
 function lateMonths(validated, c){
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && !validated.includes(ym));
@@ -582,7 +583,7 @@ function teamRows(){
   });
   const q = S.fQ.trim().toLowerCase();
   const out = rows.filter(r => (!S.fRest || r.hr.restaurant===S.fRest) && (!S.fStatus || r.m.status===S.fStatus) && (!q || nameOf(r.uid).toLowerCase().includes(q) || (r.hr.restaurant||'').toLowerCase().includes(q)));
-  const order = { dep:0, risk:1, watch:2, none:3, ok:4 };
+  const order = { dep:0, risk:1, rtt:2, watch:3, none:4, ok:5 };
   out.sort((a,b) => order[a.m.status]-order[b.m.status] || nameOf(a.uid).localeCompare(nameOf(b.uid),'fr'));
   return { all:rows, rows:out };
 }
@@ -645,7 +646,7 @@ function quotasCard(){
 function teamView(){
   const { all, rows } = teamRows();
   const act = S.isAdmin ? Object.values(S.hr).filter(h => h.actif!==false).length : all.length;
-  const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch').length,
+  const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch'||r.m.status==='rtt').length,
     over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&(r.sum.maxStreak>=7||r.sum.issues.length||r.late.length)).length };
   const rests = [...new Set(all.map(r => r.hr.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
   return `<div class="kpis">
