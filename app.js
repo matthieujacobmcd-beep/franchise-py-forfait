@@ -117,31 +117,41 @@ function alloc(hr){
   return { plafond:a.plafond || (hr&&hr.plafond) || S.settings.plafond, cp:a.cp ?? S.settings.cp, rtt:a.rtt ?? S.settings.rtt };
 }
 // Projection du cycle complet : jours planifiés (réel, sinon prévu) + jours non planifiés estimés (lundi-vendredi travaillés, week-ends OFF, fériés JF).
-// CP restants : 1 CP (jours ouvrables) = 5/6 de jour travaillé en moins. RTT restants : 1 RTT = 1 jour travaillé en moins ; 2 RTT consécutifs maximum par prise.
+// Rythme normal : tous les CP et RTT du quota sont pris avant la fin du cycle (RTT : environ 1 par mois, 2 consécutifs au maximum ;
+// CP : 2 semaines en été, le reste d'octobre à fin mai). 1 CP en jours ouvrables = 5/6 de jour travaillé en moins.
 function projectCycle(doc, c, al, sum){
   const prev = doc.prev||{}, reel = doc.reel||{}, hol = holidays(c), ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
-  let planned = 0, est = 0; const perP = Array(12).fill(0), perE = Array(12).fill(0);
+  const nowYm = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
+  const cur = c < curCycle() ? 11 : c > curCycle() ? -1 : (idx[nowYm] ?? 0);        // mois en cours dans le cycle
+  const endIso = cur >= 0 ? ms[cur].ym + '-31' : '0000-00-00';
+  let planned = 0, est = 0, rttUsed = 0, cpSummer = 0; const perP = Array(12).fill(0), perE = Array(12).fill(0);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '', i = idx[iso.slice(0,7)];
-    if(e){ if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; } }
-    else if(defaultFor(d, hol)==='JT'){ est++; perE[i]++; }
+    if(e){
+      if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; }
+      if(e==='RTT' && iso <= endIso) rttUsed++;
+      if(e==='CP' && i <= 3) cpSummer++;
+    } else if(defaultFor(d, hol)==='JT'){ est++; perE[i]++; }
   }
   const cpLeft = Math.max(0, al.cp - sum.cp), rttLeft = Math.max(0, al.rtt - sum.rtt), cpDays = Math.round(cpLeft*5/6);
   const base = planned + est, noRtt = Math.max(0, base - cpDays), withRtt = Math.max(0, noRtt - rttLeft);
-  return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE };
+  const rttDue = cur >= 0 ? Math.round(al.rtt*(cur+1)/12) : 0, rttRetard = Math.max(0, rttDue - rttUsed);
+  const monthsLeft = cur >= 0 ? Math.max(1, 12 - cur) : 12;
+  return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE,
+    rttDue, rttUsed, rttRetard, monthsLeft, rttPerMonth:rttLeft/monthsLeft, cpSummer, summerOver:cur >= 4 };
 }
 const MIN_CODED = 30;   // en dessous, le planning est trop partiel pour projeter un dépassement
 function metrics(sum, al, pj){
-  const p = pj ? pj.noRtt : sum.proj;
+  const p = pj ? pj.withRtt : sum.proj;
   if(sum.coded < MIN_CODED && sum.real <= al.plafond) return { status:'none', reste:al.plafond-p, toRest:0 };
   let status='ok';
   if(sum.real>al.plafond) status='dep';
-  else if((pj ? pj.withRtt : sum.proj) > al.plafond) status='risk';
-  else if(p>al.plafond) status='rtt';
+  else if(p>al.plafond) status='risk';
+  else if(pj && pj.noRtt>al.plafond && pj.rttRetard>0) status='rtt';
   else if(sum.blank>0 || sum.cp!==al.cp || sum.rtt!==al.rtt) status='watch';
   return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
-const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT à poser' };
+const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT en retard' };
 function lateMonths(validated, c){
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && !validated.includes(ym));
@@ -391,16 +401,16 @@ function header(){
 
 
 function summaryCard(sum, al, m, pj){
-  const partial = sum.coded < MIN_CODED, proj = pj.noRtt, scale = Math.max(al.plafond, partial ? 0 : proj, sum.real) * 1.04 || 1;
+  const partial = sum.coded < MIN_CODED, proj = pj.withRtt, scale = Math.max(al.plafond, partial ? 0 : proj, sum.real) * 1.04 || 1;
   const w = Math.min(100, sum.real/scale*100), p = partial ? 0 : Math.min(100, proj/scale*100), cap = al.plafond/scale*100;
   return `<section class="card raised" aria-labelledby="sum-h">
     <div class="row between"><h3 id="sum-h">Jours travaillés · cycle ${cycLabel(cyc())}</h3><span class="pill ${m.status}">${STATUS[m.status]}</span></div>
-    ${partial ? `<div class="big num" style="margin-top:10px">—<small>pas assez de jours saisis pour projeter (${sum.coded} sur ${MIN_CODED} minimum)</small></div>` : `<div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours</small></div>`}
+    ${partial ? `<div class="big num" style="margin-top:10px">—<small>pas assez de jours saisis pour projeter (${sum.coded} sur ${MIN_CODED} minimum)</small></div>` : `<div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours, au rythme normal</small></div>`}
     <div class="meter" role="img" aria-label="${nf(sum.real)} jours réalisés, ${nf(proj)} projetés sur le cycle complet, plafond ${al.plafond}">
       <div class="p" style="width:${p}%"></div><div class="w" style="width:${w}%"></div>
       <div class="cap" style="left:${cap}%"><b>${al.plafond}</b></div>
     </div>
-    <div class="meter-legend"><span><i style="background:var(--accent)"></i>Réalisés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Projection du cycle complet</span></div>
+    <div class="meter-legend"><span><i style="background:var(--accent)"></i>Réalisés</span><span><i style="background:var(--accent-soft);outline:1px solid var(--accent)"></i>Projection du cycle complet (CP et RTT pris au rythme normal)</span></div>
     <dl class="facts">
       <div><dt>Réalisés à ce jour</dt><dd>${nf(sum.real)} j</dd></div>
       <div><dt>Marge sur le plafond</dt><dd>${partial ? '—' : (m.reste>=0?nf(m.reste):'−'+nf(-m.reste))+' j'}</dd></div>
@@ -422,28 +432,34 @@ function summaryCard(sum, al, m, pj){
 }
 
 function projectionCard(sum, al, m, pj){
-  const over = pj.noRtt - al.plafond, partial = sum.coded < MIN_CODED, v = x => partial ? '—' : x;
-  let advice;
-  if(sum.coded < MIN_CODED){
-    advice = `<p class="note info">Planning trop partiel pour projeter (${sum.coded} jour(s) saisi(s), ${MIN_CODED} minimum). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez les CP et les RTT : la projection s'affichera ensuite.</p>`;
-  } else if(over > 0){
-    advice = pj.withRtt <= al.plafond
-      ? `<p class="note">Dépassement de ${over} jour(s) si les ${pj.rttLeft} RTT restants ne sont pas pris. En les posant (en ${pj.sessions} fois minimum, 2 RTT consécutifs au maximum), la projection passe à ${pj.withRtt} jours : dans le plafond.</p>`
-      : `<p class="note">Même en posant les ${pj.rttLeft} RTT restants, il resterait ${pj.withRtt-al.plafond} jour(s) au-dessus du plafond : ajoutez des jours OFF ou des CP.</p>`;
+  const partial = sum.coded < MIN_CODED, v = x => partial ? '—' : x, over = pj.withRtt - al.plafond;
+  const notes = [];
+  if(partial){
+    notes.push(`<p class="note info">Planning trop partiel pour projeter (${sum.coded} jour(s) saisi(s), ${MIN_CODED} minimum). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez les CP et les RTT : la projection s'affichera ensuite.</p>`);
   } else {
-    advice = `<p class="note info">Dans le plafond, avec ${-over} jour(s) de marge sans prendre les ${pj.rttLeft} RTT restants.</p>`;
+    notes.push(over > 0
+      ? `<p class="note">Même avec tous les CP et les RTT pris au rythme normal, il resterait ${over} jour(s) au-dessus du plafond : ajoutez des jours OFF ou des CP.</p>`
+      : `<p class="note info">Dans le plafond au rythme normal, avec ${-over} jour(s) de marge.</p>`);
+    if(pj.rttRetard > 0) notes.push(`<p class="note">RTT en retard : ${pj.rttRetard} de moins que le rythme attendu (${pj.rttDue} à ce jour sur ${al.rtt}, soit environ 1 par mois). Sans les ${pj.rttLeft} RTT restants, la projection serait de ${pj.noRtt} jours${pj.noRtt>al.plafond ? ` (${pj.noRtt-al.plafond} au-dessus du plafond)` : ''}.</p>`);
+    if(pj.summerOver && pj.cpSummer < 12) notes.push(`<p class="note info">Congé d'été : ${pj.cpSummer} CP posés de juin à septembre, pour un minimum de 12 jours ouvrables (2 semaines).</p>`);
   }
   return `<section class="card" aria-labelledby="pj-h"><h3 id="pj-h">Projection du cycle complet</h3>
     <dl class="facts">
       <div><dt>Jours planifiés (réel, sinon prévu)</dt><dd>${pj.planned} j</dd></div>
       <div><dt>Jours non planifiés, estimés</dt><dd>${v(pj.est+' j')}</dd></div>
-      <div><dt>CP restants (${pj.cpLeft})</dt><dd>${v('− '+pj.cpDays+' j')}</dd></div>
-      <div><dt>Projection sans les RTT restants</dt><dd>${v(pj.noRtt+' j')}</dd></div>
-      <div><dt>RTT restants à prendre</dt><dd>${v('− '+pj.rttLeft+' j')}</dd></div>
-      <div><dt>Projection avec tous les RTT pris</dt><dd>${v(pj.withRtt+' j')}</dd></div>
+      <div><dt>CP restants (${pj.cpLeft}, jours ouvrables)</dt><dd>${v('− '+pj.cpDays+' j')}</dd></div>
+      <div><dt>RTT restants (${pj.rttLeft})</dt><dd>${v('− '+pj.rttLeft+' j')}</dd></div>
+      <div><dt>Projection au rythme normal</dt><dd>${v(pj.withRtt+' j')}</dd></div>
+      <div><dt>Si les RTT restants ne sont pas pris</dt><dd>${v(pj.noRtt+' j')}</dd></div>
     </dl>
-    <div class="val-list" style="margin-top:14px">${advice}</div>
-    <p class="muted" style="font-size:12px;margin:10px 0 0">Hypothèses : les jours sans saisie sont estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF) ; un CP en jours ouvrables retire 5/6 de jour travaillé ; un RTT retire 1 jour, par prises de 2 consécutifs au maximum.</p></section>`;
+    <div class="val-list" style="margin-top:14px">${notes.join('')}</div>
+    ${partial ? '' : `<dl class="facts" style="margin-top:14px">
+      <div><dt>RTT attendus à ce jour · pris ou planifiés</dt><dd>${pj.rttDue} · ${pj.rttUsed}</dd></div>
+      <div><dt>RTT restants par mois (jusqu'à fin mai)</dt><dd>${pj.rttLeft ? nf(pj.rttPerMonth) : '0'}</dd></div>
+      <div><dt>CP posés en été (juin à sept.) · minimum</dt><dd>${pj.cpSummer} · 12</dd></div>
+      <div><dt>CP restants à placer d'octobre à mai</dt><dd>${pj.cpLeft}</dd></div>
+    </dl>`}
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Rythme normal : environ 1 RTT par mois (2 consécutifs au maximum par prise), 2 semaines de congés payés en été et le reste d'octobre à fin mai. Les jours sans saisie sont estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF) ; un CP en jours ouvrables retire 5/6 de jour travaillé.</p></section>`;
 }
 
 function monthsChart(pj, partial){
@@ -596,7 +612,7 @@ function alertChips(r){
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
   if(r.sum.coded < MIN_CODED) c.push(`<span class="pill info">Planning partiel (${r.sum.coded} j)</span>`);
   else if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
-  else if(r.pj && r.pj.noRtt>r.al.plafond) c.push(`<span class="pill watch">${r.pj.rttLeft} RTT à poser</span>`);
+  else if(r.pj && r.pj.rttRetard>0) c.push(`<span class="pill watch">RTT en retard (${r.pj.rttRetard})</span>`);
   if(r.sum.maxRtt>2) c.push(`<span class="pill dep">${r.sum.maxRtt} RTT d'affilée</span>`);
   if(r.sum.blank>0 && r.sum.coded >= MIN_CODED) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
   if(r.iv.cls!=='ok') c.push(`<span class="pill ${r.iv.cls==='dep'?'dep':'info'}">Entretien ${r.iv.label.toLowerCase()}</span>`);
@@ -665,12 +681,12 @@ function teamView(){
     <div class="field"><label for="f-st">Statut</label><select id="f-st" data-filter="fStatus"><option value="">Tous</option>${Object.entries(STATUS).map(([k2,l]) => `<option value="${k2}" ${S.fStatus===k2?'selected':''}>${l}</option>`).join('')}</select></div>
     ${S.isAdmin ? `<div class="field"><label for="f-arch">Affichage</label><select id="f-arch" data-filter="showArchived"><option value="">Collaborateurs actifs</option><option value="1" ${S.showArchived?'selected':''}>Collaborateurs retirés</option></select></div>` : ''}
   </div>
-  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r" title="Projection du cycle complet, sans les RTT restants">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
+  ${rows.length ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Collaborateur</th><th>Restaurant · N+1</th><th class="r">Réalisés</th><th class="r" title="Projection du cycle complet au rythme normal (CP et RTT pris)">Projection</th><th class="r">CP</th><th class="r">RTT</th><th>Statut</th><th>Alertes</th></tr></thead><tbody>
     ${rows.map(r => `<tr data-act="open" data-v="${esc(r.uid)}" tabindex="0">
       <td><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
       <td>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></td>
       <td class="r num">${r.started?nf(r.sum.real):'—'}</td>
-      <td class="r num">${r.started && r.sum.coded>=MIN_CODED?`${nf(r.pj.noRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.noRtt/r.al.plafond*100)}%"></i></span>`:`— / ${r.al.plafond}`}</td>
+      <td class="r num">${r.started && r.sum.coded>=MIN_CODED?`${nf(r.pj.withRtt)} / ${r.al.plafond}<span class="mini"><i style="width:${Math.min(100,r.pj.withRtt/r.al.plafond*100)}%"></i></span><small class="muted">sans RTT restants : ${nf(r.pj.noRtt)}</small>`:`— / ${r.al.plafond}`}</td>
       <td class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
       <td><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
       <td><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
@@ -865,8 +881,8 @@ function recapRowsX(hr, doc){
   rows.push([]);
   rows.push(['Collaborateur', hr.nom]); rows.push(['Cycle', cycLabel(c)]);
   rows.push(['Jours réalisés (plafond)', sum.real]); rows.push(['Jours planifiés (réel, sinon prévu)', pj.planned]); rows.push(['Jours non planifiés estimés', pj.est]);
-  rows.push(['CP restants (jours travaillés en moins)', pj.cpDays]); rows.push(['Projection sans les RTT restants', pj.noRtt]);
-  rows.push(['RTT restants à prendre', pj.rttLeft]); rows.push(['Projection avec tous les RTT pris', pj.withRtt]); rows.push(['Plafond', al.plafond]);
+  rows.push(['CP restants (jours travaillés en moins)', pj.cpDays]); rows.push(['Projection si les RTT restants ne sont pas pris', pj.noRtt]);
+  rows.push(['RTT restants à prendre', pj.rttLeft]); rows.push(['Projection au rythme normal (CP et RTT pris)', pj.withRtt]); rows.push(['RTT en retard', pj.rttRetard]); rows.push(['Plafond', al.plafond]);
   rows.push(['Marge (−) / excédent', -m.reste]);
   rows.push(['CP planifiés', sum.cp]); rows.push(['CP à prendre', al.cp]); rows.push(['RTT planifiés', sum.rtt]); rows.push(['RTT à prendre', al.rtt]);
   rows.push(['Fériés travaillés déduits', sum.jfw]);
@@ -899,7 +915,7 @@ function reportCycle(uid, doc, hr){
   return reportHead(hr, `Relevé du cycle ${cycLabel(c)}`, `Forfait annuel en jours · juin ${c} → mai ${c+1}`) +
     `<table><thead><tr><th>Mois</th>${REAL_CODES.map(x => `<th>${x.k}</th>`).join('')}<th>Fériés trav.</th><th>Non planifiés</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
     <p><b>Jours retenus pour le plafond :</b> réalisés ${nf(sum.real)} · planifiés ${pj.planned} · non planifiés estimés ${pj.est}.<br>
-    <b>Projection du cycle complet :</b> ${pj.noRtt} jours sans les ${pj.rttLeft} RTT restants (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} par rapport à ${al.plafond}) · ${pj.withRtt} jours avec tous les RTT pris (2 consécutifs maximum).<br>
+    <b>Projection du cycle complet, au rythme normal (CP et RTT pris) :</b> ${pj.withRtt} jours (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} par rapport à ${al.plafond}) · ${pj.noRtt} jours si les ${pj.rttLeft} RTT restants ne sont pas pris.<br>
     <b>Quotas :</b> CP ${sum.cp} / ${al.cp} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p></div>`;
 }
@@ -923,7 +939,7 @@ let toastTimer;
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),4200); }
 const csvCell = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
 function exportCsv(){
-  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection sans RTT restants','Projection avec RTT pris','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Jours consécutifs max','Repos/charge signalés','Entretien']];
+  const rows = [['Collaborateur','E-mail','Fonction','Catégorie','Restaurant','N+1','Plafond','Jours réalisés','Projection si RTT non pris','Projection au rythme normal','CP planifiés','CP à prendre','RTT planifiés','RTT à prendre','Jours OFF','Jours non planifiés','Statut','Mois validés','Mois non validés','Jours consécutifs max','Repos/charge signalés','Entretien']];
   for(const r of teamRows().rows){
     rows.push([nameOf(r.uid), r.hr.email, r.hr.fonction, r.hr.categorie, r.hr.restaurant, r.hr.n1, r.al.plafond, r.started?r.sum.real:'', r.started?r.pj.noRtt:'', r.started?r.pj.withRtt:'', r.started?r.sum.cp:'', r.al.cp, r.started?r.sum.rtt:'', r.al.rtt, r.started?r.sum.off:'', r.started?r.sum.blank:'', STATUS[r.m.status], r.started?r.sum.validated.length:'', r.started?r.late.length:'', r.started?r.sum.maxStreak:'', r.started?(r.sum.issues.length?'oui':'non'):'', r.iv.label]);
   }
