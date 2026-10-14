@@ -1,4 +1,4 @@
-# Franchise PY · Suivi du forfait 218 jours
+# McDonald's · Suivi du forfait 218 jours
 
 Application web (cycle juin → mai) pour les directeurs et cadres au forfait jours.
 - Chaque salarié se connecte avec son adresse e-mail et ne voit que son planning (prévu / réel, CP, RTT, validation mensuelle signée avec déclarations de repos et de charge de travail).

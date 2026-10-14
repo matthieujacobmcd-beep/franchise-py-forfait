@@ -391,7 +391,7 @@ function header(){
   if(S.isAdmin) tabs.push(['settings','Réglages']);
   return `<header class="top">
     <div class="top-row">
-      <div class="brand"><h1>Franchise PY</h1><p>Forfait ${S.settings.plafond} jours · cycle juin ${c} → mai ${c+1}</p></div>
+      <div class="brand"><h1>McDonald's</h1><p>Forfait ${S.settings.plafond} jours · cycle juin ${c} → mai ${c+1}</p></div>
       <div class="who"><select class="cyc" id="cycle-sel" data-cycle aria-label="Cycle affiché">${cycleOptions()}</select><img src="${esc(avatarUri(S.me.name))}" alt=""><span>${esc(S.me.name)}</span><button class="btn small" data-act="logout">Se déconnecter</button></div>
     </div>
     ${tabs.length>1 ? `<nav class="tabs" aria-label="Sections">${tabs.map(([k,l]) => `<button data-act="tab" data-v="${k}" ${S.tab===k?'aria-current="page"':''}>${l}</button>`).join('')}</nav>` : '<div style="height:12px"></div>'}
@@ -804,7 +804,7 @@ function render(){
     else if(!S.hasOwn) body = teamView();
     else body = employeeView({ uid:S.uid, doc:S.myCycle, hr:S.myHr, readonly:false, isAdmin:S.isAdmin });
   }
-  const top = showHeader ? header() : `<header class="top"><div class="top-row"><div class="brand"><h1>Franchise PY</h1><p>Suivi du forfait 218 jours</p></div></div><div style="height:12px"></div></header>`;
+  const top = showHeader ? header() : `<header class="top"><div class="top-row"><div class="brand"><h1>McDonald's</h1><p>Suivi du forfait 218 jours</p></div></div><div style="height:12px"></div></header>`;
   $app.innerHTML = top + `<main>${body}</main>`;
   initPad(); verifyIntegrity();
 }
