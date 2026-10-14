@@ -458,8 +458,7 @@ function projectionCard(sum, al, m, pj){
       <div><dt>RTT restants par mois (jusqu'à fin mai)</dt><dd>${pj.rttLeft ? nf(pj.rttPerMonth) : '0'}</dd></div>
       <div><dt>CP posés en été (juin à sept.) · minimum</dt><dd>${pj.cpSummer} · 12</dd></div>
       <div><dt>CP restants à placer d'octobre à mai</dt><dd>${pj.cpLeft}</dd></div>
-    </dl>`}
-    <p class="muted" style="font-size:12px;margin:10px 0 0">Rythme normal : environ 1 RTT par mois (2 consécutifs au maximum par prise), 2 semaines de congés payés en été et le reste d'octobre à fin mai. Les jours sans saisie sont estimés (lundi au vendredi travaillés, week-ends en OFF, fériés en JF) ; un CP en jours ouvrables retire 5/6 de jour travaillé.</p></section>`;
+    </dl>`}</section>`;
 }
 
 function monthsChart(pj, partial){
