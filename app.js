@@ -162,10 +162,9 @@ function metrics(sum, al, pj){
   if(sum.real>al.plafond) status='dep';
   else if(p>al.plafond) status='risk';
   else if(pj && pj.noRtt>al.plafond && pj.rttRetard>0) status='rtt';
-  else if(sum.blank>0 || sum.cp!==al.cp || sum.rtt!==al.rtt) status='watch';
   return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
-const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT en retard' };
+const STATUS = { ok:'Conforme', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT en retard' };
 function lateMonths(validated, c, from){
   const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`, f = from ? from.slice(0,7) : '';
   return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && ym >= f && !validated.includes(ym));
@@ -696,13 +695,13 @@ function consultCard(){
 function teamView(){
   const { all, rows } = teamRows();
   const act = S.isAdmin ? Object.values(S.hr).filter(h => h.actif!==false && h.role!=='lecteur').length : all.length;
-  const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='watch'||r.m.status==='rtt').length,
+  const k = { act, ok:all.filter(r=>r.m.status==='ok').length, adj:all.filter(r=>r.m.status==='rtt').length,
     over:all.filter(r=>r.m.status==='risk'||r.m.status==='dep').length, al:all.filter(r=>r.started&&(r.sum.maxStreak>=7||r.sum.issues.length||r.late.length)).length };
   const rests = [...new Set(all.map(r => r.hr.restaurant).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
   return `<div class="kpis">
     <div class="kpi"><b>${S.showArchived?all.length:act}</b><span>${S.showArchived?'Collaborateurs retirés':'Collaborateurs suivis'}</span></div>
     <div class="kpi"><b>${k.ok}</b><span>Conformes</span></div>
-    <div class="kpi"><b>${k.adj}</b><span>Planning à ajuster</span></div>
+    <div class="kpi"><b>${k.adj}</b><span>RTT en retard</span></div>
     <div class="kpi"><b>${k.over}</b><span>Au-dessus du plafond</span></div>
     <div class="kpi"><b>${k.al}</b><span>Avec alertes de suivi</span></div></div>
   ${S.adding ? addPanel() : ''}
