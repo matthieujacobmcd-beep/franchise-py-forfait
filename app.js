@@ -14,7 +14,7 @@ const CODES = [
   { k:'ABS', label:'Absence', view:true }   // affiché uniquement aux profils de consultation (AM/AT masqués)
 ];
 const ARR = new Set(['AM','AT','ABS']);   // absences médicales : comptées dans le plafond selon le réglage
-const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Superviseur (consultation des directeurs)', lecteur:'Lecteur (consultation de tous les plannings)' };
+const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Superviseur (consultation des directeurs)', lecteur:'Bureau (consultation des directeurs et cadres)' };
 const CODE = Object.fromEntries(CODES.map(c => [c.k, c]));
 const REAL_CODES = CODES.filter(x => !x.view);
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
@@ -122,7 +122,7 @@ function presence(hr, c){
 }
 function alloc(hr){
   const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {}, f = presence(hr, c);
-  return { plafond:a.plafond || (hr&&hr.plafond) || Math.round(S.settings.plafond*f), cp:a.cp ?? Math.round(S.settings.cp*f), rtt:a.rtt ?? Math.round(S.settings.rtt*f), prorata:f<1 };
+  return { plafond:a.plafond || (hr&&hr.plafond) || Math.round(S.settings.plafond*f), cp:a.cp ?? Math.round(S.settings.cp*f), cpa:a.cpa||0, rtt:a.rtt ?? Math.round(S.settings.rtt*f), prorata:f<1 };
 }
 // Projection du cycle complet : jours planifiés (réel, sinon prévu) + jours non planifiés estimés (lundi-vendredi travaillés, week-ends OFF, fériés JF).
 // Rythme normal : tous les CP et RTT du quota sont pris avant la fin du cycle (RTT : environ 1 par mois, 2 consécutifs au maximum ;
@@ -267,7 +267,7 @@ function buildDocs(jours, vals){
 function buildHr(rows, quotas){
   const out = {};
   for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
-  for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt };
+  for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt, cpa:q.cp_anticipe };
   return out;
 }
 async function loadSettings(){
@@ -430,6 +430,7 @@ function summaryCard(sum, al, m, pj){
       <div><dt>Réalisés à ce jour</dt><dd>${nf(sum.real)} j</dd></div>
       <div><dt>Marge sur le plafond</dt><dd>${partial ? '—' : (m.reste>=0?nf(m.reste):'−'+nf(-m.reste))+' j'}</dd></div>
       <div><dt>CP planifiés</dt><dd>${sum.cp} / ${al.cp}</dd></div>
+      ${al.cpa >= 1 ? `<div><dt>CP par anticipation</dt><dd>${al.cpa} j</dd></div>` : ''}
       <div><dt>RTT planifiés</dt><dd>${sum.rtt} / ${al.rtt}</dd></div>
       <div><dt>Jours OFF</dt><dd>${sum.off}</dd></div>
       <div><dt>Fériés chômés (JF)</dt><dd>${sum.jf}</dd></div>
@@ -686,7 +687,7 @@ function consultCard(){
   const list = Object.entries(S.hr).filter(([,h]) => h.role==='lecteur' && (S.showArchived ? h.actif===false : h.actif!==false)).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
   if(!S.isAdmin || !list.length) return '';
   return `<section class="card"><h2>Accès de consultation (${list.length})</h2>
-    <p class="muted" style="margin:6px 0 0">Profils « Lecteur » : ils consultent tous les plannings, sans saisir de forfait jours.</p>
+    <p class="muted" style="margin:6px 0 0">Profils « Bureau » : ils consultent les plannings des directeurs et des cadres, en lecture seule, sans saisir de forfait jours.</p>
     <div class="tablewrap" style="margin-top:10px"><table style="min-width:0"><tbody>
     ${list.map(([uid,h]) => `<tr data-act="open" data-v="${esc(uid)}" tabindex="0"><td><div class="person"><img src="${esc(avatarOf(uid))}" alt=""><div><b>${esc(h.nom)}</b><small>${esc([h.fonction, h.restaurant].filter(Boolean).join(' · ') || 'Lecteur')}</small></div></div></td><td>${esc(h.email || 'Adresse e-mail à renseigner')}</td></tr>`).join('')}
     </tbody></table></div></section>`;
@@ -747,6 +748,7 @@ function detailView(){
       <div class="field"><label for="hr-role">Droits</label><select id="hr-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}" ${(hr.role||'employe')===k?'selected':''}>${l}</option>`).join('')}</select></div>
       ${hr.role==='lecteur' ? '' : f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
       ${hr.role==='lecteur' ? '' : f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
+      ${hr.role==='lecteur' ? '' : f('hr-cpa',`CP par anticipation · cycle ${cycLabel(c)} (affiché seulement si 1 ou plus)`,a.cpa ?? '','number','min="0" max="30"')}
       ${hr.role==='lecteur' ? '' : f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
       ${f('hr-entree',"Date d'entrée (si arrivée en cours de cycle)",hr.entree||'','date')}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
@@ -917,7 +919,7 @@ function recapRowsX(hr, doc){
   rows.push(['CP restants (jours travaillés en moins)', pj.cpDays]); rows.push(['Projection si les RTT restants ne sont pas pris', pj.noRtt]);
   rows.push(['RTT restants à prendre', pj.rttLeft]); rows.push(['Projection au rythme normal (CP et RTT pris)', pj.withRtt]); rows.push(['RTT en retard', pj.rttRetard]); rows.push(['Plafond', al.plafond]);
   rows.push(['Marge (−) / excédent', -m.reste]);
-  rows.push(['CP planifiés', sum.cp]); rows.push(['CP à prendre', al.cp]); rows.push(['RTT planifiés', sum.rtt]); rows.push(['RTT à prendre', al.rtt]);
+  rows.push(['CP planifiés', sum.cp]); rows.push(['CP à prendre', al.cp]); if(al.cpa >= 1) rows.push(['CP par anticipation', al.cpa]); rows.push(['RTT planifiés', sum.rtt]); rows.push(['RTT à prendre', al.rtt]);
   rows.push(['Fériés travaillés déduits', sum.jfw]);
   return rows;
 }
@@ -949,7 +951,7 @@ function reportCycle(uid, doc, hr){
     `<table><thead><tr><th>Mois</th>${REAL_CODES.map(x => `<th>${x.k}</th>`).join('')}<th>Fériés trav.</th><th>Non planifiés</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
     <p><b>Jours retenus pour le plafond :</b> réalisés ${nf(sum.real)} · planifiés ${pj.planned} · non planifiés estimés ${pj.est}.<br>
     <b>Projection du cycle complet, au rythme normal (CP et RTT pris) :</b> ${pj.withRtt} jours (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} par rapport à ${al.plafond}) · ${pj.noRtt} jours si les ${pj.rttLeft} RTT restants ne sont pas pris.<br>
-    <b>Quotas :</b> CP ${sum.cp} / ${al.cp} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
+    <b>Quotas :</b> CP ${sum.cp} / ${al.cp}${al.cpa >= 1 ? ` (dont ${al.cpa} par anticipation)` : ''} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p></div>`;
 }
 function printReport(html){
@@ -1096,7 +1098,7 @@ $app.addEventListener('click', ev => {
     const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
-    const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt') };
+    const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt'), cp_anticipe:numOrNull('hr-cpa') };
     enqueue(async () => { await dbDo(sb.from('collaborateurs').update(row).eq('id',uid)); if(row.role!=='lecteur') await upsertChunks('quotas',[q],'collaborateur_id,cycle'); await loadData(); render(); toast('Fiche enregistrée.'); });
   }
   else if(act==='archive' || act==='restore'){
