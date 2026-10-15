@@ -581,7 +581,6 @@ function validationCard(ctx){
       <fieldset class="q"><legend>4. Je suis parvenu(e) à maintenir un bon équilibre vie professionnelle / vie personnelle</legend>${seg('equilibre',dr.equilibre,'Oui','Non')}</fieldset>
       <div class="field"><label for="comment">5. Commentaires (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
       ${rec.reopened ? `<p class="note">La DRH a modifié ce mois le ${fmtDate(rec.reopened.slice(0,10))} : vérifiez le planning et revalidez.</p>` : ''}
-      ${ongoing ? `<p class="note info">Vous pouvez valider avant la fin du mois, par exemple pour la paie : les jours à venir sont validés tels que planifiés (prévu). Toute modification ultérieure demande à la DRH de rouvrir le mois.</p>` : ''}
       ${missing ? `<p class="note">${missing} jour(s) à compléter : réel pour les jours passés, prévu pour les jours à venir.</p>` : ''}
       ${future ? `<p class="note info">Ce mois n'a pas commencé : la validation sera possible en cours de mois.</p>` : ''}
       ${S.signing==='validate' ? signPanel('validate') : `<div><button class="btn primary" data-act="sign-open" data-v="validate" ${missing||future||!S.canWrite?'disabled':''}>Signer et valider ${label}</button></div>`}
