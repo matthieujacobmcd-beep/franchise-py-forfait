@@ -473,7 +473,6 @@ function projectionCard(sum, al, m, pj){
     ${partial ? '' : `<dl class="facts" style="margin-top:14px">
       <div><dt>RTT attendus à ce jour · pris ou planifiés</dt><dd>${pj.rttDue} · ${pj.rttUsed}</dd></div>
       <div><dt>RTT restants par mois (jusqu'à fin mai)</dt><dd>${pj.rttLeft ? nf(pj.rttPerMonth) : '0'}</dd></div>
-      ${pj.rttLeft ? `<div style="grid-column:1/-1"><dt>Répartition équilibrée des ${pj.rttLeft} RTT restants (quota ${al.rtt}) : à poser par mois</dt><dd style="font-weight:400">${cycleMonths(cyc()).map((mo,i) => i>=pj.rttFirst && pj.rttRec[i] ? `${new Date(mo.y,mo.m,1).toLocaleDateString('fr-FR',{month:'long'})} : <b>+${pj.rttRec[i]}</b>` : '').filter(Boolean).join(' · ') || '—'}</dd></div>` : ''}
       <div><dt>CP posés en été (juin à sept.) · minimum</dt><dd>${pj.cpSummer} · 12</dd></div>
       <div><dt>CP restants à placer d'octobre à mai</dt><dd>${pj.cpLeft}</dd></div>
     </dl>`}</section>`;
