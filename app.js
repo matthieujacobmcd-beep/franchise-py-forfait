@@ -132,13 +132,13 @@ function projectCycle(doc, c, al, sum){
   const from = doc.from||'', nowYm = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   const cur = c < curCycle() ? 11 : c > curCycle() ? -1 : (idx[nowYm] ?? 0);        // mois en cours dans le cycle
   const endIso = cur >= 0 ? ms[cur].ym + '-31' : '0000-00-00';
-  let planned = 0, est = 0, rttUsed = 0, cpSummer = 0; const perP = Array(12).fill(0), perE = Array(12).fill(0);
+  let planned = 0, est = 0, rttUsed = 0, cpSummer = 0; const rttPer = Array(12).fill(0); const perP = Array(12).fill(0), perE = Array(12).fill(0);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '', i = idx[iso.slice(0,7)];
     if(from && iso < from) continue;
     if(e){
       if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; }
-      if(e==='RTT' && iso <= endIso) rttUsed++;
+      if(e==='RTT'){ rttPer[i]++; if(iso <= endIso) rttUsed++; }
       if(e==='CP' && i <= 3) cpSummer++;
     } else if(defaultFor(d, hol)==='JT'){ est++; perE[i]++; }
   }
@@ -147,7 +147,10 @@ function projectCycle(doc, c, al, sum){
   const startIdx = from ? (idx[from.slice(0,7)] ?? 0) : 0;
   const rttDue = cur >= startIdx ? Math.round(al.rtt*(cur-startIdx+1)/(12-startIdx)) : 0, rttRetard = Math.max(0, rttDue - rttUsed);
   const monthsLeft = cur >= 0 ? Math.max(1, 12 - Math.max(cur, startIdx)) : 12 - startIdx;
-  return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE,
+  // Répartition équilibrée : les RTT restants vont, un par un, dans le mois restant qui en compte le moins (le quota peut valoir 11 une année et 7 une autre).
+  const rttRec = Array(12).fill(0), first = Math.max(cur, startIdx, 0);
+  if(cur < 11) for(let k = 0; k < rttLeft; k++){ let b = first; for(let i = first; i < 12; i++) if(rttPer[i] + rttRec[i] < rttPer[b] + rttRec[b]) b = i; rttRec[b]++; }
+  return { rttPer, rttRec, rttFirst:first, planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE,
     rttDue, rttUsed, rttRetard, monthsLeft, rttPerMonth:rttLeft/monthsLeft, cpSummer, summerOver:cur >= 4 && startIdx <= 3 };
 }
 const MIN_CODED = 30;   // en dessous, le planning est trop partiel pour projeter un dépassement
@@ -468,6 +471,7 @@ function projectionCard(sum, al, m, pj){
     ${partial ? '' : `<dl class="facts" style="margin-top:14px">
       <div><dt>RTT attendus à ce jour · pris ou planifiés</dt><dd>${pj.rttDue} · ${pj.rttUsed}</dd></div>
       <div><dt>RTT restants par mois (jusqu'à fin mai)</dt><dd>${pj.rttLeft ? nf(pj.rttPerMonth) : '0'}</dd></div>
+      ${pj.rttLeft ? `<div style="grid-column:1/-1"><dt>Répartition équilibrée des ${pj.rttLeft} RTT restants (quota ${al.rtt}) : à poser par mois</dt><dd style="font-weight:400">${cycleMonths(cyc()).map((mo,i) => i>=pj.rttFirst && pj.rttRec[i] ? `${new Date(mo.y,mo.m,1).toLocaleDateString('fr-FR',{month:'long'})} : <b>+${pj.rttRec[i]}</b>` : '').filter(Boolean).join(' · ') || '—'}</dd></div>` : ''}
       <div><dt>CP posés en été (juin à sept.) · minimum</dt><dd>${pj.cpSummer} · 12</dd></div>
       <div><dt>CP restants à placer d'octobre à mai</dt><dd>${pj.cpLeft}</dd></div>
     </dl>`}</section>`;
