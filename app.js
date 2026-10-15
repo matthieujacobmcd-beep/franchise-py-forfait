@@ -109,7 +109,7 @@ function summarize(doc, c){
   for(const ym of Object.keys(months)){
     const m = months[ym]; if(!m || !m.valide) continue;
     validated.push(ym);
-    if(m.r11===false || m.r35===false || (m.charge && m.charge!=='ok')) issues.push(ym);
+    if(m.r11===false || m.r35===false || m.equilibre===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
   const minCoded = from ? Math.max(7, Math.round(30*(dayDiff(from, cycleRange(c).to)+1)/365)) : MIN_CODED;
   return { min:minCoded, proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
@@ -187,7 +187,7 @@ async function sha256(str){
 }
 function canonical(doc, uid, ym, rec){
   const pick = o => Object.keys(o||{}).filter(k => k.startsWith(ym) && o[k]).sort().map(k => k+'='+o[k]).join(',');
-  return JSON.stringify([uid, ym, pick(doc.prev), pick(doc.reel), rec.r11!==false, rec.r35!==false, rec.charge||'ok', rec.comment||'']);
+  return JSON.stringify([uid, ym, pick(doc.prev), pick(doc.reel), rec.r11!==false, rec.r35!==false, rec.charge||'ok', rec.comment||''].concat(rec.equilibre===false ? ['equilibre=non'] : []));
 }
 function sigSvg(sig){
   if(!sig || !sig.strokes) return '';
@@ -261,7 +261,7 @@ async function fetchPages(make){
 function buildDocs(jours, vals){
   const docs = {}, get = id => docs[id] || (docs[id] = emptyCycle());
   for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; }
-  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, charge:v.charge, comment:v.commentaire||'', reopened:v.reouvert_le, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
+  for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, equilibre:v.equilibre, charge:v.charge, comment:v.commentaire||'', reopened:v.reouvert_le, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
   return docs;
 }
 function buildHr(rows, quotas){
@@ -548,13 +548,14 @@ function validationCard(ctx){
   const c = cyc(), mo = cycleMonths(c)[S.mi], ym = mo.ym, rec = ctx.doc.months[ym] || {};
   const label = `${MONTHS[mo.m].toLowerCase()} ${mo.y}`;
   if(rec.valide){
-    const bad = rec.r11===false || rec.r35===false || (rec.charge && rec.charge!=='ok');
+    const bad = rec.r11===false || rec.r35===false || rec.equilibre===false || (rec.charge && rec.charge!=='ok');
     return `<section class="card" aria-labelledby="val-h"><div class="row between"><h3 id="val-h">Validation de ${label}</h3>
       <span class="row"><span class="pill ${bad?'watch':'ok'}">${bad?'Validé avec réserve':'Validé'}</span>${rec.visa ? `<span class="pill info">Visé DRH/N+1</span>`:''}</span></div>
       <div class="val-list">
-        <div>Repos quotidien de 11 h : <b>${rec.r11===false?'non respecté':'respecté'}</b></div>
-        <div>Repos hebdomadaire de 35 h : <b>${rec.r35===false?'non respecté':'respecté'}</b></div>
-        <div>Charge de travail : <b>${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}</b></div>
+        <div>Charge de travail ce mois-ci : <b>${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}</b></div>
+        <div>Temps de travail quotidien et hebdomadaire respecté : <b>${rec.r11===false?'Non':'Oui'}</b></div>
+        <div>Temps de repos quotidiens, hebdomadaires et congés payés respectés : <b>${rec.r35===false?'Non':'Oui'}</b></div>
+        <div>Bon équilibre vie professionnelle / vie personnelle : <b>${rec.equilibre===false?'Non':'Oui'}</b></div>
         ${rec.comment ? `<div class="muted">« ${esc(rec.comment)} »</div>` : ''}
         <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>
         ${rec.at && rec.at.slice(0,10) < isoOf(mo.y,mo.m,new Date(mo.y,mo.m+1,0).getDate()) ? `<p class="muted" style="margin:0;font-size:12px">Validation anticipée : les jours postérieurs au ${fmtDate(rec.at.slice(0,10))} sont validés tels que planifiés.</p>` : ''}
@@ -568,16 +569,17 @@ function validationCard(ctx){
   let missing = 0;
   for(let d=1; d<=dim; d++){ const iso = isoOf(mo.y,mo.m,d); if(ctx.doc.from && iso < ctx.doc.from) continue; if(iso<t){ if(!ctx.doc.reel[iso]) missing++; } else if(!ctx.doc.prev[iso] && !ctx.doc.reel[iso]) missing++; }
   const ongoing = !future && isoOf(mo.y,mo.m,dim) > t;
-  const dr = S.draft[ym] || (S.draft[ym] = { r11:true, r35:true, charge:'ok', comment:'' });
+  const dr = S.draft[ym] || (S.draft[ym] = { r11:true, r35:true, equilibre:true, charge:'ok', comment:'' });
   const seg = (k, v, a, b) => `<div class="seg" role="group"><button data-act="draft" data-k="${k}" data-v="true" aria-pressed="${v!==false}">${a}</button><button class="bad" data-act="draft" data-k="${k}" data-v="false" aria-pressed="${v===false}">${b}</button></div>`;
   return `<section class="card" aria-labelledby="val-h"><h3 id="val-h">Validation de ${label}</h3>
     <p class="muted" style="margin:6px 0 0">Chaque fin de mois, confirmez votre réel et vos conditions de repos, puis signez électroniquement.</p>
     <div class="val-list">
-      <fieldset class="q"><legend>Repos quotidien de 11 heures consécutives respecté ?</legend>${seg('r11',dr.r11,'Oui','Non')}</fieldset>
-      <fieldset class="q"><legend>Repos hebdomadaire de 35 heures consécutives respecté ?</legend>${seg('r35',dr.r35,'Oui','Non')}</fieldset>
-      <div class="field"><label for="charge">Votre charge de travail ce mois-ci</label>
+      <div class="field"><label for="charge">1. Ma charge de travail ce mois-ci</label>
         <select id="charge" data-k="charge"><option value="ok" ${dr.charge==='ok'?'selected':''}>Raisonnable</option><option value="haute" ${dr.charge==='haute'?'selected':''}>Élevée</option><option value="excessive" ${dr.charge==='excessive'?'selected':''}>Excessive</option></select></div>
-      <div class="field"><label for="comment">Commentaire (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
+      <fieldset class="q"><legend>2. Mon organisation m'a permis de respecter le temps de travail quotidien et hebdomadaire</legend>${seg('r11',dr.r11,'Oui','Non')}</fieldset>
+      <fieldset class="q"><legend>3. Mon organisation m'a permis de respecter les temps de repos quotidiens, hebdomadaires et mes congés payés</legend>${seg('r35',dr.r35,'Oui','Non')}</fieldset>
+      <fieldset class="q"><legend>4. Je suis parvenu(e) à maintenir un bon équilibre vie professionnelle / vie personnelle</legend>${seg('equilibre',dr.equilibre,'Oui','Non')}</fieldset>
+      <div class="field"><label for="comment">5. Commentaires (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
       ${rec.reopened ? `<p class="note">La DRH a modifié ce mois le ${fmtDate(rec.reopened.slice(0,10))} : vérifiez le planning et revalidez.</p>` : ''}
       ${ongoing ? `<p class="note info">Vous pouvez valider avant la fin du mois, par exemple pour la paie : les jours à venir sont validés tels que planifiés (prévu). Toute modification ultérieure demande à la DRH de rouvrir le mois.</p>` : ''}
       ${missing ? `<p class="note">${missing} jour(s) à compléter : réel pour les jours passés, prévu pour les jours à venir.</p>` : ''}
@@ -628,7 +630,7 @@ function alertChips(r){
   const c = [];
   if(!r.started) return `<span class="muted">${r.hr.email ? 'Aucune saisie' : 'Adresse e-mail à renseigner'}</span>`;
   if(r.sum.maxStreak>=7) c.push(`<span class="pill dep">${r.sum.maxStreak} j d'affilée</span>`);
-  if(r.sum.issues.length) c.push(`<span class="pill watch">Repos/charge signalés</span>`);
+  if(r.sum.issues.length) c.push(`<span class="pill watch">Charge / repos signalés</span>`);
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
   if(r.sum.coded < r.sum.min) c.push(`<span class="pill info">Planning partiel (${r.sum.coded} j)</span>`);
   else if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
@@ -930,7 +932,7 @@ function reportMonth(uid, doc, hr){
     return `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${p||'—'}</td><td>${r||'—'}</td><td>${esc(hol[iso]||'')}</td></tr>`; }).join('');
   const tally = {}; for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(e) tally[e] = (tally[e]||0)+1; }
   const sig = rec.valide
-    ? `<p>Déclarations du salarié : repos quotidien de 11 h ${rec.r11===false?'non respecté':'respecté'} · repos hebdomadaire de 35 h ${rec.r35===false?'non respecté':'respecté'} · charge de travail ${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}${rec.comment ? ' · « '+esc(rec.comment)+' »' : ''}.</p><p>Mois validé et signé électroniquement par <b>${esc(rec.sig && rec.sig.name || hr.nom)}</b>${rec.at ? ' le '+fmtDate(rec.at.slice(0,10)) : ''}. ${rec.visa ? 'Visé par '+esc(rec.visa.name||'la DRH')+(rec.visa.at ? ' le '+fmtDate(rec.visa.at.slice(0,10)) : '')+'.' : 'Non visé.'}</p>
+    ? `<p>Déclarations du salarié : charge de travail ${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'} · temps de travail quotidien et hebdomadaire respecté : ${rec.r11===false?'non':'oui'} · temps de repos et congés payés respectés : ${rec.r35===false?'non':'oui'} · équilibre vie professionnelle / personnelle : ${rec.equilibre===false?'non':'oui'}${rec.comment ? ' · « '+esc(rec.comment)+' »' : ''}.</p><p>Mois validé et signé électroniquement par <b>${esc(rec.sig && rec.sig.name || hr.nom)}</b>${rec.at ? ' le '+fmtDate(rec.at.slice(0,10)) : ''}. ${rec.visa ? 'Visé par '+esc(rec.visa.name||'la DRH')+(rec.visa.at ? ' le '+fmtDate(rec.visa.at.slice(0,10)) : '')+'.' : 'Non visé.'}</p>
        <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>${rec.hash ? `<p><small>Empreinte SHA-256 : ${esc(rec.hash)}</small></p>` : ''}`
     : `<p>Mois non validé.</p>`;
   return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
@@ -1052,7 +1054,7 @@ $app.addEventListener('click', ev => {
     for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d); if(iso<=t && !doc.reel[iso] && doc.prev[iso]) map[iso] = doc.prev[iso]; }
     if(Object.keys(map).length) setCodes('reel', map); else toast('Rien à confirmer : le prévu est déjà reporté en réel ou vide.');
   }
-  else if(act==='draft'){ S.draft[mo.ym] = { ...(S.draft[mo.ym]||{r11:true,r35:true,charge:'ok',comment:''}), [el.dataset.k]: v==='true' }; render(); }
+  else if(act==='draft'){ S.draft[mo.ym] = { ...(S.draft[mo.ym]||{r11:true,r35:true,equilibre:true,charge:'ok',comment:''}), [el.dataset.k]: v==='true' }; render(); }
   else if(act==='sign-open'){ S.signing=v; padStrokes=[]; render(); }
   else if(act==='sign-cancel'){ S.signing=null; padStrokes=[]; render(); }
   else if(act==='sign-clear'){ padStrokes=[]; render(); }
@@ -1063,10 +1065,10 @@ $app.addEventListener('click', ev => {
     S.signing=null; padStrokes=[];
     enqueue(async () => {
       if(kind==='validate'){
-        const dr = S.draft[mo.ym] || {r11:true,r35:true,charge:'ok',comment:''};
-        const rec = { r11:dr.r11!==false, r35:dr.r35!==false, charge:dr.charge||'ok', comment:(dr.comment||'').trim() };
+        const dr = S.draft[mo.ym] || {r11:true,r35:true,equilibre:true,charge:'ok',comment:''};
+        const rec = { r11:dr.r11!==false, r35:dr.r35!==false, equilibre:dr.equilibre!==false, charge:dr.charge||'ok', comment:(dr.comment||'').trim() };
         const hash = await sha256(canonical(S.myCycle, S.uid, mo.ym, rec));
-        await dbDo(sb.from('validations').upsert({ collaborateur_id:S.uid, mois:mo.ym, valide:true, r11:rec.r11, r35:rec.r35, charge:rec.charge, commentaire:rec.comment, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
+        await dbDo(sb.from('validations').upsert({ collaborateur_id:S.uid, mois:mo.ym, valide:true, r11:rec.r11, r35:rec.r35, equilibre:rec.equilibre, charge:rec.charge, commentaire:rec.comment, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
         await loadData(); render(); toast('Mois signé et validé.');
       } else if(kind==='visa'){
         const uid = S.viewUid, base = ((S.allDocs[uid]||emptyCycle()).months[mo.ym]) || {};
@@ -1133,7 +1135,7 @@ $app.addEventListener('click', ev => {
 $app.addEventListener('keydown', ev => { if((ev.key==='Enter'||ev.key===' ') && ev.target.matches('tr[data-act="open"]')){ ev.preventDefault(); ev.target.click(); } });
 $app.addEventListener('input', ev => {
   const t = ev.target;
-  if(t.dataset.k){ const ym = cycleMonths(cyc())[S.mi].ym; S.draft[ym] = { ...(S.draft[ym]||{r11:true,r35:true,charge:'ok',comment:''}), [t.dataset.k]: t.value }; }
+  if(t.dataset.k){ const ym = cycleMonths(cyc())[S.mi].ym; S.draft[ym] = { ...(S.draft[ym]||{r11:true,r35:true,equilibre:true,charge:'ok',comment:''}), [t.dataset.k]: t.value }; }
   else if(t.dataset.filter==='fQ'){ S.fQ=t.value; const pos=t.selectionStart; render(); const n=document.getElementById('f-q'); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }
 });
 $app.addEventListener('change', ev => {
