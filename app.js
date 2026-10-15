@@ -82,7 +82,7 @@ const normCycle = d => ({ prev:(d&&d.prev)||{}, reel:(d&&d.reel)||{}, months:(d&
 
 // ---------- calculations
 function summarize(doc, c){
-  const prev = doc.prev||{}, reel = doc.reel||{}, months = doc.months||{};
+  const prev = doc.prev||{}, reel = doc.reel||{}, months = doc.months||{}, from = doc.from||'';
   const ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
   const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0) };
   const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0, ABS:0 };
@@ -90,6 +90,7 @@ function summarize(doc, c){
   const hol = holidays(c);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '';
+    if(from && iso < from){ last=null; streak=0; rttRun=0; continue; }
     if(!e){ blank++; last=null; streak=0; rttRun=0; continue; }
     n[e]++; coded++;
     if(e==='RTT'){ rttRun++; maxRtt = Math.max(maxRtt, rttRun); } else if(e!=='OFF' && e!=='JF'){ rttRun = 0; }
@@ -110,23 +111,31 @@ function summarize(doc, c){
     validated.push(ym);
     if(m.r11===false || m.r35===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
-  return { proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
+  const minCoded = from ? Math.max(7, Math.round(30*(dayDiff(from, cycleRange(c).to)+1)/365)) : MIN_CODED;
+  return { min:minCoded, proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
+}
+// Part du cycle effectivement présente (arrivée en cours de cycle) : sert à proratiser les quotas par défaut.
+function presence(hr, c){
+  const e = startOf(hr, c), { from, to } = cycleRange(c);
+  if(!e) return 1; if(e > to) return 0;
+  return (dayDiff(e, to)+1) / (dayDiff(from, to)+1);
 }
 function alloc(hr){
-  const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {};
-  return { plafond:a.plafond || (hr&&hr.plafond) || S.settings.plafond, cp:a.cp ?? S.settings.cp, rtt:a.rtt ?? S.settings.rtt };
+  const c = cyc(), a = (hr && hr.cycles && hr.cycles[c]) || {}, f = presence(hr, c);
+  return { plafond:a.plafond || (hr&&hr.plafond) || Math.round(S.settings.plafond*f), cp:a.cp ?? Math.round(S.settings.cp*f), rtt:a.rtt ?? Math.round(S.settings.rtt*f), prorata:f<1 };
 }
 // Projection du cycle complet : jours planifiés (réel, sinon prévu) + jours non planifiés estimés (lundi-vendredi travaillés, week-ends OFF, fériés JF).
 // Rythme normal : tous les CP et RTT du quota sont pris avant la fin du cycle (RTT : environ 1 par mois, 2 consécutifs au maximum ;
 // CP : 2 semaines en été, le reste d'octobre à fin mai). 1 CP en jours ouvrables = 5/6 de jour travaillé en moins.
 function projectCycle(doc, c, al, sum){
   const prev = doc.prev||{}, reel = doc.reel||{}, hol = holidays(c), ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
-  const nowYm = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
+  const from = doc.from||'', nowYm = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
   const cur = c < curCycle() ? 11 : c > curCycle() ? -1 : (idx[nowYm] ?? 0);        // mois en cours dans le cycle
   const endIso = cur >= 0 ? ms[cur].ym + '-31' : '0000-00-00';
   let planned = 0, est = 0, rttUsed = 0, cpSummer = 0; const perP = Array(12).fill(0), perE = Array(12).fill(0);
   for(const d of cycleDays(c)){
     const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '', i = idx[iso.slice(0,7)];
+    if(from && iso < from) continue;
     if(e){
       if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; }
       if(e==='RTT' && iso <= endIso) rttUsed++;
@@ -135,15 +144,16 @@ function projectCycle(doc, c, al, sum){
   }
   const cpLeft = Math.max(0, al.cp - sum.cp), rttLeft = Math.max(0, al.rtt - sum.rtt), cpDays = Math.round(cpLeft*5/6);
   const base = planned + est, noRtt = Math.max(0, base - cpDays), withRtt = Math.max(0, noRtt - rttLeft);
-  const rttDue = cur >= 0 ? Math.round(al.rtt*(cur+1)/12) : 0, rttRetard = Math.max(0, rttDue - rttUsed);
-  const monthsLeft = cur >= 0 ? Math.max(1, 12 - cur) : 12;
+  const startIdx = from ? (idx[from.slice(0,7)] ?? 0) : 0;
+  const rttDue = cur >= startIdx ? Math.round(al.rtt*(cur-startIdx+1)/(12-startIdx)) : 0, rttRetard = Math.max(0, rttDue - rttUsed);
+  const monthsLeft = cur >= 0 ? Math.max(1, 12 - Math.max(cur, startIdx)) : 12 - startIdx;
   return { planned, est, base, cpLeft, cpDays, rttLeft, noRtt, withRtt, sessions:Math.ceil(rttLeft/2), perP, perE,
-    rttDue, rttUsed, rttRetard, monthsLeft, rttPerMonth:rttLeft/monthsLeft, cpSummer, summerOver:cur >= 4 };
+    rttDue, rttUsed, rttRetard, monthsLeft, rttPerMonth:rttLeft/monthsLeft, cpSummer, summerOver:cur >= 4 && startIdx <= 3 };
 }
 const MIN_CODED = 30;   // en dessous, le planning est trop partiel pour projeter un dépassement
 function metrics(sum, al, pj){
   const p = pj ? pj.withRtt : sum.proj;
-  if(sum.coded < MIN_CODED && sum.real <= al.plafond) return { status:'none', reste:al.plafond-p, toRest:0 };
+  if(sum.coded < sum.min && sum.real <= al.plafond) return { status:'none', reste:al.plafond-p, toRest:0 };
   let status='ok';
   if(sum.real>al.plafond) status='dep';
   else if(p>al.plafond) status='risk';
@@ -152,9 +162,9 @@ function metrics(sum, al, pj){
   return { status, reste:al.plafond-p, toRest:Math.max(0,p-al.plafond) };
 }
 const STATUS = { ok:'Conforme', watch:'Planning à ajuster', risk:'Projection au-dessus du plafond', dep:'Plafond dépassé', none:'Planning à démarrer', rtt:'RTT en retard' };
-function lateMonths(validated, c){
-  const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`;
-  return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && !validated.includes(ym));
+function lateMonths(validated, c, from){
+  const cur = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`, f = from ? from.slice(0,7) : '';
+  return cycleMonths(c).map(m => m.ym).filter(ym => ym < cur && ym >= f && !validated.includes(ym));
 }
 function interviewStatus(hr){
   const t = todayIso();
@@ -235,6 +245,7 @@ const msg = e => {
   return m || 'Une erreur est survenue. Réessayez.';
 };
 const cycleRange = c => ({ from:`${c}-06-01`, to:`${c+1}-05-31` });
+const startOf = (hr, c) => { const e = hr && hr.entree; return e && e > `${c}-06-01` ? e : ''; };   // arrivée en cours de cycle
 async function fetchPages(make){
   const out = [];
   for(let from=0; ; from+=1000){
@@ -252,7 +263,7 @@ function buildDocs(jours, vals){
 }
 function buildHr(rows, quotas){
   const out = {};
-  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
+  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
   for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt };
   return out;
 }
@@ -294,6 +305,7 @@ async function loadData(){
     }
     S.hr = hr; S.allDocs = docs;
   }
+  for(const id of Object.keys(S.hr)){ const d = S.allDocs[id] || emptyCycle(); d.from = startOf(S.hr[id], c); S.allDocs[id] = d; }
   S.myHr = S.hr[S.uid] || null; S.myCycle = S.allDocs[S.uid] || emptyCycle(); S.dataAt = Date.now();
 }
 async function loadHistory(id){
@@ -401,11 +413,11 @@ function header(){
 
 
 function summaryCard(sum, al, m, pj){
-  const partial = sum.coded < MIN_CODED, proj = pj.withRtt, scale = Math.max(al.plafond, partial ? 0 : proj, sum.real) * 1.04 || 1;
+  const partial = sum.coded < sum.min, proj = pj.withRtt, scale = Math.max(al.plafond, partial ? 0 : proj, sum.real) * 1.04 || 1;
   const w = Math.min(100, sum.real/scale*100), p = partial ? 0 : Math.min(100, proj/scale*100), cap = al.plafond/scale*100;
   return `<section class="card raised" aria-labelledby="sum-h">
     <div class="row between"><h3 id="sum-h">Jours travaillés · cycle ${cycLabel(cyc())}</h3><span class="pill ${m.status}">${STATUS[m.status]}</span></div>
-    ${partial ? `<div class="big num" style="margin-top:10px">—<small>pas assez de jours saisis pour projeter (${sum.coded} sur ${MIN_CODED} minimum)</small></div>` : `<div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours, au rythme normal</small></div>`}
+    ${partial ? `<div class="big num" style="margin-top:10px">—<small>pas assez de jours saisis pour projeter (${sum.coded} sur ${sum.min} minimum)</small></div>` : `<div class="big num" style="margin-top:10px">${nf(proj)}<small>projetés sur ${al.plafond} jours, au rythme normal</small></div>`}
     <div class="meter" role="img" aria-label="${nf(sum.real)} jours réalisés, ${nf(proj)} projetés sur le cycle complet, plafond ${al.plafond}">
       <div class="p" style="width:${p}%"></div><div class="w" style="width:${w}%"></div>
       <div class="cap" style="left:${cap}%"><b>${al.plafond}</b></div>
@@ -432,10 +444,10 @@ function summaryCard(sum, al, m, pj){
 }
 
 function projectionCard(sum, al, m, pj){
-  const partial = sum.coded < MIN_CODED, v = x => partial ? '—' : x, over = pj.withRtt - al.plafond;
+  const partial = sum.coded < sum.min, v = x => partial ? '—' : x, over = pj.withRtt - al.plafond;
   const notes = [];
   if(partial){
-    notes.push(`<p class="note info">Planning trop partiel pour projeter (${sum.coded} jour(s) saisi(s), ${MIN_CODED} minimum). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez les CP et les RTT : la projection s'affichera ensuite.</p>`);
+    notes.push(`<p class="note info">Planning trop partiel pour projeter (${sum.coded} jour(s) saisi(s), ${sum.min} minimum). Utilisez « Pré-remplir tout le cycle » dans la couche Prévu, puis placez les CP et les RTT : la projection s'affichera ensuite.</p>`);
   } else {
     notes.push(over > 0
       ? `<p class="note">Même avec tous les CP et les RTT pris au rythme normal, il resterait ${over} jour(s) au-dessus du plafond : ajoutez des jours OFF ou des CP.</p>`
@@ -493,8 +505,9 @@ function calendarCard(ctx){
       if(dt.getMonth()!==mo.m){ cells += `<div class="day blank"></div>`; continue; }
       const iso = toIso(dt), h = hol[iso], p = prev[iso]||'', r = reel[iso]||'';
       const code = layer==='prev' ? p : (r || p);
-      const cls = ['day', d>=5?'we':'', h?'hol':'', iso===t?'today':'', layer==='reel' && !r && p ? 'pend' : '', layer==='reel' && r && p && r!==p ? 'diff' : ''].filter(Boolean).join(' ');
-      cells += `<button class="${cls}" data-act="day" data-v="${iso}" ${code?`data-code="${code}"`:''} ${ro?'disabled':''} title="${esc(h || fmtDate(iso))}${code?' · '+CODE[code].label:''}" aria-label="${fmtDate(iso)}${h?' férié':''}${code?', '+CODE[code].label:', non planifié'}"><span class="n">${dt.getDate()}</span><span class="c">${code}</span></button>`;
+      const pre = !!(ctx.doc.from && iso < ctx.doc.from);
+      const cls = ['day', pre?'pre':'', d>=5?'we':'', h?'hol':'', iso===t?'today':'', layer==='reel' && !r && p ? 'pend' : '', layer==='reel' && r && p && r!==p ? 'diff' : ''].filter(Boolean).join(' ');
+      cells += `<button class="${cls}" data-act="day" data-v="${iso}" ${code?`data-code="${code}"`:''} ${(ro||pre)?'disabled':''} title="${esc(h || fmtDate(iso))}${code?' · '+CODE[code].label:''}" aria-label="${fmtDate(iso)}${h?' férié':''}${code?', '+CODE[code].label:', non planifié'}"><span class="n">${dt.getDate()}</span><span class="c">${code}</span></button>`;
     }
   }
   const tally = {};
@@ -516,6 +529,7 @@ function calendarCard(ctx){
     ${locked && edit ? `<p class="note" style="margin:14px 0">Ce mois est validé. Toute modification annule la validation : le collaborateur devra revalider.</p>` : ''}
     ${edit && !locked ? `<p class="note info" style="margin:14px 0">Vous modifiez le planning de ${esc(nameOf(ctx.uid))}.</p>` : ''}
     ${!locked && !view && !edit && !S.canWrite ? `<p class="note" style="margin:14px 0">Lecture seule : votre accès ne permet pas la saisie.</p>` : ''}
+    ${ctx.doc.from ? `<p class="note info" style="margin:12px 0">Arrivée le ${fmtDate(ctx.doc.from)} : les jours précédents ne comptent pas et les quotas sont proratisés.</p>` : ''}
     <div class="cal" style="margin-top:${ro?14:0}px">${cells}</div>
     <div class="tally">${CODES.map(x => tally[x.k] ? `<span>${x.k} : <b>${tally[x.k]}</b></span>` : '').join('')}</div>
     ${ro ? '' : `<div class="row" style="margin-top:14px">
@@ -539,6 +553,7 @@ function validationCard(ctx){
         <div>Charge de travail : <b>${rec.charge==='haute'?'élevée':rec.charge==='excessive'?'excessive':'raisonnable'}</b></div>
         ${rec.comment ? `<div class="muted">« ${esc(rec.comment)} »</div>` : ''}
         <div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>
+        ${rec.at && rec.at.slice(0,10) < isoOf(mo.y,mo.m,new Date(mo.y,mo.m+1,0).getDate()) ? `<p class="muted" style="margin:0;font-size:12px">Validation anticipée : les jours postérieurs au ${fmtDate(rec.at.slice(0,10))} sont validés tels que planifiés.</p>` : ''}
         <div id="integ" data-ym="${ym}"></div>
         ${rec.hash ? `<small class="muted num" style="word-break:break-all">Empreinte SHA-256 : ${esc(rec.hash)}</small>` : ''}
       </div>
@@ -547,7 +562,8 @@ function validationCard(ctx){
   if(ctx.readonly) return `<section class="card"><h3>Validation de ${label}</h3><p class="muted" style="margin:10px 0 0">Le salarié n'a pas encore validé ce mois.</p></section>`;
   const future = new Date(mo.y,mo.m,1) > nowD, t = todayIso(), dim = new Date(mo.y,mo.m+1,0).getDate();
   let missing = 0;
-  for(let d=1; d<=dim; d++){ const iso = isoOf(mo.y,mo.m,d); if(iso<=t && !ctx.doc.reel[iso]) missing++; }
+  for(let d=1; d<=dim; d++){ const iso = isoOf(mo.y,mo.m,d); if(ctx.doc.from && iso < ctx.doc.from) continue; if(iso<t){ if(!ctx.doc.reel[iso]) missing++; } else if(!ctx.doc.prev[iso] && !ctx.doc.reel[iso]) missing++; }
+  const ongoing = !future && isoOf(mo.y,mo.m,dim) > t;
   const dr = S.draft[ym] || (S.draft[ym] = { r11:true, r35:true, charge:'ok', comment:'' });
   const seg = (k, v, a, b) => `<div class="seg" role="group"><button data-act="draft" data-k="${k}" data-v="true" aria-pressed="${v!==false}">${a}</button><button class="bad" data-act="draft" data-k="${k}" data-v="false" aria-pressed="${v===false}">${b}</button></div>`;
   return `<section class="card" aria-labelledby="val-h"><h3 id="val-h">Validation de ${label}</h3>
@@ -559,7 +575,8 @@ function validationCard(ctx){
         <select id="charge" data-k="charge"><option value="ok" ${dr.charge==='ok'?'selected':''}>Raisonnable</option><option value="haute" ${dr.charge==='haute'?'selected':''}>Élevée</option><option value="excessive" ${dr.charge==='excessive'?'selected':''}>Excessive</option></select></div>
       <div class="field"><label for="comment">Commentaire (facultatif)</label><textarea id="comment" data-k="comment" maxlength="500">${esc(dr.comment)}</textarea></div>
       ${rec.reopened ? `<p class="note">La DRH a modifié ce mois le ${fmtDate(rec.reopened.slice(0,10))} : vérifiez le planning et revalidez.</p>` : ''}
-      ${missing ? `<p class="note">${missing} jour(s) sans réel. Utilisez « Confirmer le prévu comme réalisé » dans la couche Réel, puis corrigez les écarts.</p>` : ''}
+      ${ongoing ? `<p class="note info">Vous pouvez valider avant la fin du mois, par exemple pour la paie : les jours à venir sont validés tels que planifiés (prévu). Toute modification ultérieure demande à la DRH de rouvrir le mois.</p>` : ''}
+      ${missing ? `<p class="note">${missing} jour(s) à compléter : réel pour les jours passés, prévu pour les jours à venir.</p>` : ''}
       ${future ? `<p class="note info">Ce mois n'a pas commencé : la validation sera possible en cours de mois.</p>` : ''}
       ${S.signing==='validate' ? signPanel('validate') : `<div><button class="btn primary" data-act="sign-open" data-v="validate" ${missing||future||!S.canWrite?'disabled':''}>Signer et valider ${label}</button></div>`}
     </div></section>`;
@@ -578,7 +595,7 @@ function employeeView(ctx){
   const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
   S.verCtx = { uid:ctx.uid, doc:ctx.doc };
   return `<div class="grid2">
-    <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj, sum.coded < MIN_CODED)}${historyCard(S.history[ctx.uid])}</div>
+    <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj, sum.coded < sum.min)}${historyCard(S.history[ctx.uid])}</div>
     <div class="stack">${calendarCard(ctx)}${consult ? '' : validationCard(ctx)}${consult ? '' : downloadCard()}</div></div>`;
 }
 
@@ -594,7 +611,7 @@ function teamRows(){
     const started = Object.keys(doc.prev).length + Object.keys(doc.reel).length > 0;
     const sum = started ? summarize(doc, c) : null, pj = started ? projectCycle(doc, c, al, sum) : null;
     const m = started ? metrics(sum, al, pj) : { status:'none', reste:al.plafond, toRest:0 };
-    const late = started && S.isAdmin ? lateMonths(sum.validated, c) : [];
+    const late = started && S.isAdmin ? lateMonths(sum.validated, c, doc.from) : [];
     return { uid, hr, al, sum, pj, m, late, started, iv:S.isAdmin ? interviewStatus(hr) : { cls:'ok', label:'' } };
   });
   const q = S.fQ.trim().toLowerCase();
@@ -609,11 +626,11 @@ function alertChips(r){
   if(r.sum.maxStreak>=7) c.push(`<span class="pill dep">${r.sum.maxStreak} j d'affilée</span>`);
   if(r.sum.issues.length) c.push(`<span class="pill watch">Repos/charge signalés</span>`);
   if(r.late.length) c.push(`<span class="pill watch">${r.late.length} mois non validé${r.late.length>1?'s':''}</span>`);
-  if(r.sum.coded < MIN_CODED) c.push(`<span class="pill info">Planning partiel (${r.sum.coded} j)</span>`);
+  if(r.sum.coded < r.sum.min) c.push(`<span class="pill info">Planning partiel (${r.sum.coded} j)</span>`);
   else if(r.pj && r.pj.withRtt>r.al.plafond) c.push(`<span class="pill dep">Dépasse même avec les RTT</span>`);
   else if(r.pj && r.pj.rttRetard>0) c.push(`<span class="pill watch">RTT en retard (${r.pj.rttRetard})</span>`);
   if(r.sum.maxRtt>2) c.push(`<span class="pill dep">${r.sum.maxRtt} RTT d'affilée</span>`);
-  if(r.sum.blank>0 && r.sum.coded >= MIN_CODED) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
+  if(r.sum.blank>0 && r.sum.coded >= r.sum.min) c.push(`<span class="pill info">${r.sum.blank} j non planifiés</span>`);
   if(r.iv.cls!=='ok') c.push(`<span class="pill ${r.iv.cls==='dep'?'dep':'info'}">Entretien ${r.iv.label.toLowerCase()}</span>`);
   return c.length ? c.join('') : '<span class="muted">Aucune</span>';
 }
@@ -628,6 +645,7 @@ function addPanel(){
       <div class="field"><label for="add-categorie">Catégorie</label><select id="add-categorie"><option>Directeur</option><option>Cadre</option></select></div>
       ${f('add-restaurant','Restaurant','','text','maxlength="80"')}${f('add-n1','N+1 (responsable)','','text','maxlength="80"')}
       <div class="field"><label for="add-role">Droits</label><select id="add-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
+      ${f('add-entree',"Date d'entrée (si arrivée en cours de cycle)",'','date')}
       ${f('add-plafond',`Jours à travailler · cycle ${cycLabel(cyc())}`,s.plafond,'number','min="1" max="366"')}
       ${f('add-cp',`CP à prendre · cycle ${cycLabel(cyc())}`,s.cp,'number','min="0" max="60"')}
       ${f('add-rtt',`RTT à prendre · cycle ${cycLabel(cyc())}`,s.rtt,'number','min="0" max="30"')}
@@ -694,7 +712,7 @@ function teamView(){
       <td data-label="Collaborateur"><div class="person"><img src="${esc(avatarOf(r.uid))}" alt=""><div><b>${esc(nameOf(r.uid))}</b><small>${esc([r.hr.fonction,r.hr.categorie].filter(Boolean).join(' · ') || 'Fonction non renseignée')}</small></div></div></td>
       <td data-label="Restaurant · N+1"><div>${esc(r.hr.restaurant || '—')}<br><small class="muted">${esc(r.hr.n1 || '')}</small></div></td>
       <td data-label="Réalisés" class="r num">${r.started?nf(r.sum.real):'—'}</td>
-      <td data-label="Projection" class="r num">${r.started && r.sum.coded>=MIN_CODED?`<span class="pv">${nf(r.pj.withRtt)} / ${r.al.plafond}</span><span class="mini"><i style="width:${Math.min(100,r.pj.withRtt/r.al.plafond*100)}%"></i></span><small class="muted">sans RTT restants : ${nf(r.pj.noRtt)}</small>`:`— / ${r.al.plafond}`}</td>
+      <td data-label="Projection" class="r num">${r.started && r.sum.coded>=r.sum.min?`<span class="pv">${nf(r.pj.withRtt)} / ${r.al.plafond}</span><span class="mini"><i style="width:${Math.min(100,r.pj.withRtt/r.al.plafond*100)}%"></i></span><small class="muted">sans RTT restants : ${nf(r.pj.noRtt)}</small>`:`— / ${r.al.plafond}`}</td>
       <td data-label="CP" class="r num">${r.started?r.sum.cp:'—'} / ${r.al.cp}</td><td data-label="RTT" class="r num">${r.started?r.sum.rtt:'—'} / ${r.al.rtt}</td>
       <td data-label="Statut"><span class="pill ${r.m.status}">${STATUS[r.m.status]}</span></td>
       <td data-label="Alertes"><div class="chips">${alertChips(r)}</div></td></tr>`).join('')}
@@ -725,6 +743,7 @@ function detailView(){
       ${hr.role==='lecteur' ? '' : f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
       ${hr.role==='lecteur' ? '' : f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
       ${hr.role==='lecteur' ? '' : f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
+      ${f('hr-entree',"Date d'entrée (si arrivée en cours de cycle)",hr.entree||'','date')}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
     </div>
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="save-hr">Enregistrer la fiche</button>
@@ -733,7 +752,7 @@ function detailView(){
         ? `<span class="note" style="display:inline-block">Supprime la fiche et tout l'historique. Action irréversible.</span><button class="btn danger solid" data-act="delete-final">Oui, supprimer définitivement</button><button class="btn" data-act="delete-cancel">Annuler</button>`
         : `<button class="btn danger" data-act="delete-ask">Supprimer définitivement</button>`) : ''}
     </div>
-    <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages, proratisée si une date d'entrée tombe dans le cycle. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
   const doc = S.allDocs[uid] || emptyCycle();
   if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit tous les plannings en lecture seule et n'a pas de forfait jours à saisir.</p>`;
   return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
@@ -883,7 +902,7 @@ function recapRowsX(hr, doc){
   const rows = [['Mois', ...REAL_CODES.map(x => x.k), 'Fériés travaillés', 'Non planifiés', 'Validation']];
   for(const mo of cycleMonths(c)){
     const t = {}; let blank = 0, jfw = 0;
-    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
     rows.push([`${MONTHS[mo.m]} ${mo.y}`, ...REAL_CODES.map(x => t[x.k]||0), jfw, blank, rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '']);
   }
@@ -918,7 +937,7 @@ function reportMonth(uid, doc, hr){
 function reportCycle(uid, doc, hr){
   const c = cyc(), al = alloc(hr), sum = summarize(doc, c), pj = projectCycle(doc, c, al, sum), m = metrics(sum, al, pj), ms = cycleMonths(c), hol = holidays(c);
   const rows = ms.map(mo => { const t = {}; let blank = 0, jfw = 0;
-    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
     return `<tr><td>${MONTHS[mo.m]} ${mo.y}</td>${REAL_CODES.map(x => `<td>${t[x.k]||0}</td>`).join('')}<td>${jfw}</td><td>${blank}</td><td>${rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '—'}</td></tr>`; }).join('');
   return reportHead(hr, `Relevé du cycle ${cycLabel(c)}`, `Forfait annuel en jours · juin ${c} → mai ${c+1}`) +
@@ -1015,13 +1034,13 @@ $app.addEventListener('click', ev => {
   else if(act==='week'){
     const layerDoc = S.layer==='prev' ? doc.prev : doc.reel, map = {}, mon = parse(v);
     for(let i=0;i<7;i++){ const d = new Date(mon); d.setDate(d.getDate()+i); const iso = toIso(d);
-      if(d.getMonth()===mo.m && d.getFullYear()===mo.y && !layerDoc[iso]) map[iso]=S.brush; }
+      if(d.getMonth()===mo.m && d.getFullYear()===mo.y && !layerDoc[iso] && !(doc.from && iso < doc.from)) map[iso]=S.brush; }
     if(Object.keys(map).length) setCodes(S.layer, map); else toast('Aucun jour vide dans cette semaine.');
   }
   else if(act==='fillmonth' || act==='fillcycle'){
     const map = {};
     const days = act==='fillmonth' ? Array.from({length:new Date(mo.y,mo.m+1,0).getDate()}, (_,i) => new Date(mo.y,mo.m,i+1)) : [...cycleDays(c)];
-    for(const d of days){ const iso = toIso(d); if(!doc.prev[iso]) map[iso] = defaultFor(d,hol); }
+    for(const d of days){ const iso = toIso(d); if(!doc.prev[iso] && !(doc.from && iso < doc.from)) map[iso] = defaultFor(d,hol); }
     if(Object.keys(map).length) setCodes('prev', map); else toast('Tout est déjà planifié.');
   }
   else if(act==='confirm'){
@@ -1069,7 +1088,7 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='save-hr'){
     const uid = S.viewUid;
-    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), entretien:val('hr-entretien')||null };
+    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt') };
@@ -1089,7 +1108,7 @@ $app.addEventListener('click', ev => {
   else if(act==='add-open'){ S.adding=true; render(); }
   else if(act==='add-close'){ S.adding=false; render(); }
   else if(act==='add-save'){
-    const row = { nom:val('add-nom'), email:emailOrNull('add-email'), fonction:val('add-fonction'), categorie:val('add-categorie'), restaurant:val('add-restaurant'), n1:val('add-n1'), role:val('add-role'), actif:true };
+    const row = { nom:val('add-nom'), email:emailOrNull('add-email'), fonction:val('add-fonction'), categorie:val('add-categorie'), restaurant:val('add-restaurant'), n1:val('add-n1'), role:val('add-role'), actif:true, date_entree:val('add-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     const q = { plafond:numOrNull('add-plafond'), cp:numOrNull('add-cp'), rtt:numOrNull('add-rtt') };
     S.adding=false; render();

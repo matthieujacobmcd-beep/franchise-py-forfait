@@ -237,3 +237,4 @@ td.r,th.r{text-align:right}
 @media (min-width:701px) and (max-width:1000px){
   .grid2{grid-template-columns:minmax(0,1fr)}
 }
+.day.pre{opacity:.35;background:repeating-linear-gradient(135deg,var(--off) 0 6px,transparent 6px 12px)}

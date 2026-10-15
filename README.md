@@ -82,3 +82,9 @@ La page projette le nombre de jours travaillés sur tout le cycle : jours planif
 - Double authentification (TOTP) obligatoire pour les administrateurs.
 - Sauvegardes : activez les sauvegardes quotidiennes Supabase (offre Pro) ou exportez régulièrement en CSV.
 - Journal d'audit des modifications côté DRH.
+
+## Arrivée en cours de cycle
+Renseigner la **date d'entrée** dans la fiche du collaborateur. Les jours avant l'arrivée sont ignorés (grisés), le plafond, les CP et les RTT par défaut sont proratisés et les seuils d'alerte adaptés. Les quotas restent modifiables à la main.
+
+## Validation avant la fin du mois
+Le mois en cours peut être signé avant son terme (par exemple pour la paie) : les jours à venir sont validés tels que planifiés. Toute modification ultérieure demande à la DRH de rouvrir le mois.
