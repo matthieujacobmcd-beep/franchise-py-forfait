@@ -14,7 +14,8 @@ const CODES = [
   { k:'ABS', label:'Absence', view:true }   // affiché uniquement aux profils de consultation (AM/AT masqués)
 ];
 const ARR = new Set(['AM','AT','ABS']);   // absences médicales : comptées dans le plafond selon le réglage
-const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Superviseur (consultation des directeurs)', lecteur:'Bureau (consultation des directeurs et cadres)' };
+const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Consultation + forfait jours (voit son niveau et ceux en dessous)', lecteur:'Consultation seule, sans forfait jours (voit son niveau et ceux en dessous)' };
+const NIVEAUX = { 1:'Niveau 1', 2:'Niveau 2 (Bureau)', 3:'Niveau 3', 4:'Niveau 4 (directeurs de restaurant)' };
 const CODE = Object.fromEntries(CODES.map(c => [c.k, c]));
 const REAL_CODES = CODES.filter(x => !x.view);
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
@@ -266,7 +267,7 @@ function buildDocs(jours, vals){
 }
 function buildHr(rows, quotas){
   const out = {};
-  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
+  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
   for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt, cpa:q.cp_anticipe };
   return out;
 }
@@ -402,7 +403,7 @@ function header(){
   const c = cyc();
   const tabs = [];
   if(S.hasOwn) tabs.push(['me','Mon suivi']);
-  if(S.isAdmin || S.consult) tabs.push(['team', S.role==='superviseur' ? 'Directeurs' : 'Équipe']);
+  if(S.isAdmin || S.consult) tabs.push(['team', 'Équipe']);
   if(S.isAdmin) tabs.push(['settings','Réglages']);
   return `<header class="top">
     <div class="top-row">
@@ -650,6 +651,7 @@ function addPanel(){
       ${f('add-fonction','Fonction','','text','maxlength="80"')}
       <div class="field"><label for="add-categorie">Catégorie</label><select id="add-categorie"><option>Directeur</option><option>Cadre</option></select></div>
       ${f('add-restaurant','Restaurant','','text','maxlength="80"')}${f('add-n1','N+1 (responsable)','','text','maxlength="80"')}
+      <div class="field"><label for="add-niveau">Niveau hiérarchique (consulte son niveau et ceux en dessous)</label><select id="add-niveau">${Object.entries(NIVEAUX).map(([k,l]) => `<option value="${k}" ${k==4?'selected':''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label for="add-role">Droits</label><select id="add-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
       ${f('add-entree',"Date d'entrée (si arrivée en cours de cycle)",'','date')}
       ${f('add-plafond',`Jours à travailler · cycle ${cycLabel(cyc())}`,s.plafond,'number','min="1" max="366"')}
@@ -687,7 +689,7 @@ function consultCard(){
   const list = Object.entries(S.hr).filter(([,h]) => h.role==='lecteur' && (S.showArchived ? h.actif===false : h.actif!==false)).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
   if(!S.isAdmin || !list.length) return '';
   return `<section class="card"><h2>Accès de consultation (${list.length})</h2>
-    <p class="muted" style="margin:6px 0 0">Profils « Bureau » : ils consultent les plannings des directeurs et des cadres, en lecture seule, sans saisir de forfait jours.</p>
+    <p class="muted" style="margin:6px 0 0">Profils en consultation seule : ils voient les plannings de leur niveau et des niveaux inférieurs, sans saisir de forfait jours.</p>
     <div class="tablewrap" style="margin-top:10px"><table style="min-width:0"><tbody>
     ${list.map(([uid,h]) => `<tr data-act="open" data-v="${esc(uid)}" tabindex="0"><td><div class="person"><img src="${esc(avatarOf(uid))}" alt=""><div><b>${esc(h.nom)}</b><small>${esc([h.fonction, h.restaurant].filter(Boolean).join(' · ') || 'Lecteur')}</small></div></div></td><td>${esc(h.email || 'Adresse e-mail à renseigner')}</td></tr>`).join('')}
     </tbody></table></div></section>`;
@@ -705,7 +707,7 @@ function teamView(){
     <div class="kpi"><b>${k.over}</b><span>Au-dessus du plafond</span></div>
     <div class="kpi"><b>${k.al}</b><span>Avec alertes de suivi</span></div></div>
   ${S.adding ? addPanel() : ''}
-  <section class="card"><div class="row between"><h2>${S.role==='superviseur' ? 'Directeurs' : 'Équipe'} · cycle ${cycLabel(cyc())}</h2>
+  <section class="card"><div class="row between"><h2>${'Équipe'} · cycle ${cycLabel(cyc())}</h2>
     ${S.isAdmin ? `<span class="row"><button class="btn small" data-act="export" ${rows.length?'':'disabled'}>Exporter en Excel</button><button class="btn small primary" data-act="add-open">Ajouter un collaborateur</button></span>` : `<span class="pill info">Consultation</span>`}</div>
   <div class="filters">
     <div class="field"><label for="f-q">Recherche</label><input type="search" id="f-q" data-filter="fQ" value="${esc(S.fQ)}" placeholder="Nom ou restaurant"></div>
@@ -745,6 +747,7 @@ function detailView(){
       ${f('hr-fonction','Fonction',hr.fonction||'','text','maxlength="80"')}
       <div class="field"><label for="hr-categorie">Catégorie</label><select id="hr-categorie"><option value="">—</option>${['Directeur','Cadre'].map(x=>`<option ${hr.categorie===x?'selected':''}>${x}</option>`).join('')}</select></div>
       ${f('hr-restaurant','Restaurant',hr.restaurant||'','text','maxlength="80"')}${f('hr-n1','N+1 (responsable)',hr.n1||'','text','maxlength="80"')}
+      <div class="field"><label for="hr-niveau">Niveau hiérarchique (consulte son niveau et ceux en dessous)</label><select id="hr-niveau">${Object.entries(NIVEAUX).map(([k,l]) => `<option value="${k}" ${(hr.niveau||4)==k?'selected':''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label for="hr-role">Droits</label><select id="hr-role">${Object.entries(ROLES).map(([k,l]) => `<option value="${k}" ${(hr.role||'employe')===k?'selected':''}>${l}</option>`).join('')}</select></div>
       ${hr.role==='lecteur' ? '' : f('hr-plafond',`Jours à travailler · cycle ${cycLabel(c)}`,a.plafond ?? '','number',`min="1" max="366" placeholder="${S.settings.plafond}"`)}
       ${hr.role==='lecteur' ? '' : f('hr-cp',`CP à prendre · cycle ${cycLabel(c)}`,a.cp ?? '','number',`min="0" max="60" placeholder="${S.settings.cp}"`)}
@@ -761,7 +764,7 @@ function detailView(){
     </div>
     <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages, proratisée si une date d'entrée tombe dans le cycle. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
   const doc = S.allDocs[uid] || emptyCycle();
-  if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit tous les plannings en lecture seule et n'a pas de forfait jours à saisir.</p>`;
+  if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit en lecture seule les plannings de son niveau et des niveaux inférieurs et n'a pas de forfait jours à saisir.</p>`;
   return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
 }
 
@@ -1095,7 +1098,7 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='save-hr'){
     const uid = S.viewUid;
-    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
+    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt'), cp_anticipe:numOrNull('hr-cpa') };
@@ -1115,7 +1118,7 @@ $app.addEventListener('click', ev => {
   else if(act==='add-open'){ S.adding=true; render(); }
   else if(act==='add-close'){ S.adding=false; render(); }
   else if(act==='add-save'){
-    const row = { nom:val('add-nom'), email:emailOrNull('add-email'), fonction:val('add-fonction'), categorie:val('add-categorie'), restaurant:val('add-restaurant'), n1:val('add-n1'), role:val('add-role'), actif:true, date_entree:val('add-entree')||null };
+    const row = { nom:val('add-nom'), email:emailOrNull('add-email'), fonction:val('add-fonction'), categorie:val('add-categorie'), restaurant:val('add-restaurant'), n1:val('add-n1'), role:val('add-role'), niveau:Number(val('add-niveau'))||4, actif:true, date_entree:val('add-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     const q = { plafond:numOrNull('add-plafond'), cp:numOrNull('add-cp'), rtt:numOrNull('add-rtt') };
     S.adding=false; render();
