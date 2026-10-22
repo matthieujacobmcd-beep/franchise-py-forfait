@@ -251,3 +251,6 @@ td.r,th.r{text-align:right}
 .sigframe{flex:1;border:1px solid #888;min-height:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:space-between;color:#000;background:#fff;break-inside:avoid}
 .sigframe span{font-size:10.5px;color:#555}
 .rpt .tot td{background:#f3f3f3}
+.cprow{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--line)}
+.cprow:first-of-type{margin-top:8px}
+.cpact{display:grid;gap:8px;min-width:240px;max-width:100%}

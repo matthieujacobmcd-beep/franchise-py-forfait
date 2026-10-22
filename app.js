@@ -31,7 +31,7 @@ const S = {
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
   viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
-  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
+  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, cp:{ list:[] }, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
 
@@ -268,7 +268,7 @@ function buildDocs(jours, vals){
 }
 function buildHr(rows, quotas){
   const out = {};
-  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, emarg:!!r.emargement, repas:!!r.repas, htype:r.horaire_type||null, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
+  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, emarg:!!r.emargement, repas:!!r.repas, valideur:r.valideur_id||'', htype:r.horaire_type||null, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
   for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt, cpa:q.cp_anticipe };
   return out;
 }
@@ -363,6 +363,7 @@ async function startSession(){
   await loadData();
   S.tab = (!S.isAdmin && S.hasEmarg && !S.hasOwn) ? 'emarg' : (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
   if(S.hasOwn) loadHistory(S.uid).then(safeRender).catch(() => {});
+  loadCp().then(safeRender).catch(() => {});
   bumpIdle();
 }
 async function logout(){ try { await sb.auth.signOut(); } finally { location.reload(); } }
@@ -405,6 +406,7 @@ function header(){
   const tabs = [];
   if(S.hasOwn) tabs.push(['me','Mon suivi']);
   if(S.hasEmarg && !S.isAdmin) tabs.push(['emarg','Mon émargement']);
+  if(S.hasOwn || S.hasEmarg || S.isAdmin || S.consult) tabs.push(['cp', 'Demandes de CP' + (cpToDecide().length ? ` (${cpToDecide().length})` : '')]);
   if(S.isAdmin || S.consult) tabs.push(['team', 'Équipe']);
   if(S.isAdmin) tabs.push(['emarg','Émargement']);
   if(S.isAdmin) tabs.push(['settings','Réglages']);
@@ -758,6 +760,7 @@ function detailView(){
       ${f('hr-entree',"Date d'entrée (si arrivée en cours de cycle)",hr.entree||'','date')}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
       <div style="grid-column:1/-1"><label class="row" style="gap:8px"><input type="checkbox" id="hr-emarg" style="width:auto" ${hr.emarg?'checked':''}><span><b>Suit son temps de travail (émargement des horaires)</b>, pour les collaborateurs hors forfait jours</span></label>
+        <div class="field" style="margin-top:10px;max-width:360px"><label for="hr-valideur">Validateur des demandes de CP</label><select id="hr-valideur"><option value="">— (la DRH décide)</option>${Object.entries(S.hr).filter(([id,h]) => id!==uid && h.actif!==false && ['admin','superviseur','lecteur'].includes(h.role)).sort((a,b) => a[1].nom.localeCompare(b[1].nom,'fr')).map(([id,h]) => `<option value="${esc(id)}" ${hr.valideur===id?'selected':''}>${esc(h.nom)}</option>`).join('')}</select></div>
         <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" id="hr-repas" style="width:auto" ${hr.repas?'checked':''}><span>Saisit le nombre de repas par jour (superviseurs)</span></label>
         <div class="htype"><b>Horaire type</b> <small class="muted">(les deux heures vides = jour de repos)</small>
           ${DOW.map((d,i) => { const x = (hr.htype && hr.htype[i+1]) || {}; return `<div class="hrow"><span>${d}</span><input type="time" id="ht-d-${i+1}" value="${esc(x.d||'')}" aria-label="Début ${d}"><input type="time" id="ht-f-${i+1}" value="${esc(x.f||'')}" aria-label="Fin ${d}"><input type="number" id="ht-p-${i+1}" min="0" max="240" value="${esc(x.p ?? '')}" placeholder="pause (min)" aria-label="Pause ${d}"></div>`; }).join('')}
@@ -940,6 +943,38 @@ function emargView(){
   </section>${editor}${vcard}${dlcard}`;
 }
 
+// ---------- demandes de CP (le collaborateur demande, son validateur accepte ou refuse, les jours passent en CP)
+const CP_STATUT = { attente:['En attente','watch'], accepte:['Accepté','ok'], refuse:['Refusé','dep'], annule:['Annulé','none'] };
+function cpDays(d1, d2){
+  const hol = { ...holidaysOf(parse(d1).getFullYear()), ...holidaysOf(parse(d2).getFullYear()) }, out = [];
+  for(let d = parse(d1), end = parse(d2); d <= end; d.setDate(d.getDate()+1)){ const iso = toIso(d); if(d.getDay()!==0 && !hol[iso]) out.push(iso); }
+  return out;
+}
+const cpToDecide = () => S.cp.list.filter(r => r.statut==='attente' && (S.isAdmin || r.valideur_id===S.uid));
+async function loadCp(){
+  const { data, error } = await sb.from('demandes_cp').select('*').order('cree_le', { ascending:false });
+  if(error) throw error; S.cp.list = data;
+}
+function cpView(){
+  const fmtR = r => `${fmtDate(r.date_debut)}${r.date_fin!==r.date_debut ? ' → '+fmtDate(r.date_fin) : ''} · ${r.jours} jour(s) ouvrable(s)`;
+  const pill = r => `<span class="pill ${CP_STATUT[r.statut][1]}">${CP_STATUT[r.statut][0]}</span>`;
+  const mine = S.cp.list.filter(r => r.collaborateur_id===S.uid), todo = cpToDecide();
+  const done = S.cp.list.filter(r => r.collaborateur_id!==S.uid && r.statut!=='attente').slice(0,15);
+  const canAsk = S.hasOwn || S.hasEmarg;
+  const form = canAsk ? `<section class="card" aria-labelledby="cpn-h"><h3 id="cpn-h">Nouvelle demande de congés payés</h3>
+      <p class="muted" style="margin:6px 0 0">Votre demande est envoyée à votre validateur. Si elle est acceptée, les jours passent automatiquement en CP sur votre planning.</p>
+      <div class="form-grid" style="margin-top:12px"><div class="field"><label for="cp-from">Du</label><input type="date" id="cp-from"></div><div class="field"><label for="cp-to">Au (inclus)</label><input type="date" id="cp-to"></div>
+      <div class="field" style="grid-column:1/-1"><label for="cp-note">Commentaire (facultatif)</label><textarea id="cp-note" maxlength="300"></textarea></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" data-act="cp-send">Envoyer la demande</button></div>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">Les jours ouvrables comptés vont du lundi au samedi, hors jours fériés.</p></section>` : '';
+  const card = r => `<div class="cprow"><div><b>${esc(r.nom_demandeur||'Collaborateur')}</b><br>${esc(fmtR(r))}${r.commentaire ? `<br><span class="muted">« ${esc(r.commentaire)} »</span>` : ''}${S.isAdmin ? `<br><small class="muted">Validateur désigné : ${esc(r.nom_valideur||'DRH')}</small>` : ''}</div>
+      <div class="cpact"><input type="text" id="cp-m-${esc(r.id)}" placeholder="Motif du refus (facultatif)" maxlength="300"><div class="row"><button class="btn small primary" data-act="cp-ok" data-v="${esc(r.id)}">Accepter</button><button class="btn small danger" data-act="cp-no" data-v="${esc(r.id)}">Refuser</button></div></div></div>`;
+  return form +
+    (todo.length || S.isAdmin || S.consult ? `<section class="card" aria-labelledby="cpt-h"><h3 id="cpt-h">Demandes à valider${todo.length ? ` (${todo.length})` : ''}</h3>${todo.length ? todo.map(card).join('') : `<p class="muted" style="margin:10px 0 0">Aucune demande en attente.</p>`}</section>` : '') +
+    (canAsk ? `<section class="card" aria-labelledby="cpm-h"><h3 id="cpm-h">Mes demandes</h3>${mine.length ? mine.map(r => `<div class="cprow"><div>${esc(fmtR(r))}${r.commentaire ? `<br><span class="muted">« ${esc(r.commentaire)} »</span>` : ''}<br><small class="muted">${r.statut==='attente' ? 'En attente de : '+esc(r.nom_valideur||'la DRH') : r.decide_par ? 'Décidé par '+esc(r.decide_par)+(r.decide_le ? ' le '+fmtDate(r.decide_le.slice(0,10)) : '') : ''}${r.motif ? ' · Motif : '+esc(r.motif) : ''}</small></div><div class="row">${pill(r)}${r.statut==='attente' ? `<button class="btn small" data-act="cp-cancel" data-v="${esc(r.id)}">Annuler</button>` : ''}</div></div>`).join('') : `<p class="muted" style="margin:10px 0 0">Aucune demande.</p>`}</section>` : '') +
+    (done.length ? `<section class="card" aria-labelledby="cph-h"><h3 id="cph-h">Décisions récentes</h3>${done.map(r => `<div class="cprow"><div><b>${esc(r.nom_demandeur||'')}</b><br>${esc(fmtR(r))}</div><div class="row">${pill(r)}</div></div>`).join('')}</section>` : '');
+}
+
 function settingsView(){
   const s = S.settings, cy = curCycle();
   const f = (id,l,v,min,max) => `<div class="field"><label for="${id}">${l}</label><input type="number" id="${id}" value="${v}" min="${min}" max="${max}"></div>`;
@@ -1002,6 +1037,7 @@ function render(){
     else if(S.tab==='team' && S.consult) body = S.viewUid ? consultDetailView() : teamView();
     else if(S.tab==='settings' && S.isAdmin) body = settingsView();
     else if(S.tab==='emarg' && (S.isAdmin || S.hasEmarg)) body = emargView();
+    else if(S.tab==='cp') body = cpView();
     else if(!S.hasOwn) body = teamView();
     else body = employeeView({ uid:S.uid, doc:S.myCycle, hr:S.myHr, readonly:false, isAdmin:S.isAdmin });
   }
@@ -1301,6 +1337,25 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='open'){ S.viewUid=v; S.mi = defaultMonthIndex(c); render(); if(S.isAdmin) loadHistory(v).then(safeRender).catch(() => {}); }
   else if(act==='back'){ S.viewUid=null; S.confirmDel=null; render(); }
+  else if(act==='cp-send'){
+    const d1 = val('cp-from'), d2 = val('cp-to') || val('cp-from');
+    if(!d1){ toast('Indiquez la date de début.'); return; }
+    if(d2 < d1){ toast('La date de fin précède la date de début.'); return; }
+    if(dayDiff(d1,d2) > 60){ toast('Une demande ne peut pas dépasser 60 jours.'); return; }
+    const jours = cpDays(d1,d2).length; if(!jours){ toast('Cette période ne contient aucun jour ouvrable.'); return; }
+    const row = { collaborateur_id:S.uid, date_debut:d1, date_fin:d2, jours, commentaire:val('cp-note') || null };
+    enqueue(async () => { await dbDo(sb.from('demandes_cp').insert(row)); await loadCp(); render(); toast('Demande envoyée.'); });
+  }
+  else if(act==='cp-cancel'){ enqueue(async () => { await dbDo(sb.from('demandes_cp').update({ statut:'annule' }).eq('id',v)); await loadCp(); render(); toast('Demande annulée.'); }); }
+  else if(act==='cp-ok' || act==='cp-no'){
+    const r = S.cp.list.find(x => x.id===v); if(!r) return;
+    const motif = (document.getElementById('cp-m-'+v)||{}).value || '';
+    enqueue(async () => {
+      const { error } = await sb.rpc('decider_cp', { p_id:v, p_accepte: act==='cp-ok', p_motif:motif, p_jours: cpDays(r.date_debut, r.date_fin) });
+      if(error) throw error;
+      await loadCp(); if(S.isAdmin) await loadData(); render(); toast(act==='cp-ok' ? 'Demande acceptée : les jours sont en CP sur le planning.' : 'Demande refusée.');
+    });
+  }
   else if(act==='em-dl') emDownload(v);
   else if(act==='em-reopen'){
     const uid = emUid();
@@ -1318,7 +1373,7 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='save-hr'){
     const uid = S.viewUid;
-    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, emargement:document.getElementById('hr-emarg').checked, repas:document.getElementById('hr-repas').checked, horaire_type:readHtype(), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
+    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, emargement:document.getElementById('hr-emarg').checked, repas:document.getElementById('hr-repas').checked, valideur_id:document.getElementById('hr-valideur').value || null, horaire_type:readHtype(), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt'), cp_anticipe:numOrNull('hr-cpa') };
