@@ -31,7 +31,7 @@ const S = {
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
   viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
-  em:{ rows:{}, loading:{}, day:null, sel:null }, hasEmarg:false, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
+  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
 
@@ -199,14 +199,15 @@ function sigBox(sig, role){
   return `<div class="sigbox">${sigSvg(sig)}<small>${esc(role)} · ${esc(sig.name||'')}<br>${sig.at ? fmtDate(sig.at.slice(0,10)) : ''}</small></div>`;
 }
 function signPanel(kind){
-  const txt = kind==='visa'
-    ? "Je vise ce mois en tant que DRH / N+1 après examen du planning et des déclarations du salarié."
+  const txt = kind==='visa' ? "Je vise ce mois en tant que DRH / N+1 après examen du planning et des déclarations du salarié."
+    : kind==='emvisa' ? "Je vise cet émargement en tant que DRH / N+1 après examen des horaires du mois."
+    : kind==='emvalidate' ? "Je certifie l'exactitude des horaires que j'ai saisis pour ce mois."
     : "Je certifie l'exactitude de mon planning réel et de mes déclarations pour ce mois.";
   return `<div class="signpad"><b>Signature électronique</b>
     <canvas id="pad" width="480" height="160" aria-label="Zone de signature"></canvas>
     <label class="row" style="gap:8px;align-items:flex-start"><input type="checkbox" id="sign-ok" style="width:auto;margin-top:4px"><span>${txt}</span></label>
     <div class="row"><button class="btn small" data-act="sign-clear">Effacer</button><button class="btn small" data-act="sign-cancel">Annuler</button>
-    <button class="btn primary" data-act="sign-submit">Signer${kind==='visa'?' et viser':' et valider'}</button></div>
+    <button class="btn primary" data-act="sign-submit">Signer${/visa/.test(kind)?' et viser':' et valider'}</button></div>
     <small class="muted">Signature électronique simple : votre identité de compte, la date et une empreinte du contenu sont enregistrées avec le dessin.</small></div>`;
 }
 function initPad(){
@@ -223,6 +224,7 @@ function initPad(){
   cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 }
 async function verifyIntegrity(){
+  if(S.tab==='emarg') return emVerify();
   const el = document.getElementById('integ'); if(!el || !S.verCtx) return;
   const { uid, doc } = S.verCtx, ym = el.dataset.ym, rec = doc.months[ym];
   if(!rec || !rec.hash){ el.textContent = ''; return; }
@@ -792,21 +794,69 @@ function emEnsure(uid){
   if(!uid || S.em.rows[uid] || S.em.loading[uid]) return;
   S.em.loading[uid] = true;
   const { from, to } = cycleRange(cyc());
-  fetchPages(() => sb.from('emargements').select('jour,statut,debut,fin,pause_min').eq('collaborateur_id',uid).gte('jour',from).lte('jour',to).order('jour'))
-    .then(rows => { const m = {}; for(const r of rows) m[r.jour] = { statut:r.statut, debut:r.debut ? r.debut.slice(0,5) : '', fin:r.fin ? r.fin.slice(0,5) : '', pause:r.pause_min ?? 0 }; S.em.rows[uid] = m; })
-    .catch(e => { toast(msg(e)); S.em.rows[uid] = {}; })
+  Promise.all([
+    fetchPages(() => sb.from('emargements').select('jour,statut,debut,fin,pause_min').eq('collaborateur_id',uid).gte('jour',from).lte('jour',to).order('jour')),
+    sb.from('emarg_validations').select('*').eq('collaborateur_id',uid)
+  ]).then(([rows, vals]) => {
+      if(vals.error) throw vals.error;
+      const m = {}; for(const r of rows) m[r.jour] = { statut:r.statut, debut:r.debut ? r.debut.slice(0,5) : '', fin:r.fin ? r.fin.slice(0,5) : '', pause:r.pause_min ?? 0 };
+      const v = {}; for(const x of vals.data) v[x.mois] = { valide:x.valide, at:x.signe_le, reopened:x.reouvert_le, hash:x.empreinte, sig:x.signature, visa:x.visa };
+      S.em.rows[uid] = m; S.em.vals[uid] = v; })
+    .catch(e => { toast(msg(e)); S.em.rows[uid] = {}; S.em.vals[uid] = {}; })
     .finally(() => { S.em.loading[uid] = false; safeRender(); });
 }
 function emSet(uid, map){
   const cur = S.em.rows[uid] || {}, next = { ...cur };
   for(const [d,r] of Object.entries(map)){ if(r) next[d] = r; else delete next[d]; }
-  S.em.rows[uid] = next; render();
+  S.em.rows[uid] = next;
+  const vv = (S.em.vals[uid] = S.em.vals[uid] || {}), tm = new Set(Object.keys(map).map(d => d.slice(0,7)));
+  if(S.isAdmin){ const was = [...tm].filter(ym => vv[ym] && vv[ym].valide); for(const ym of was) vv[ym] = { valide:false, reopened:new Date().toISOString() }; if(was.length) toast('Validation du mois annulée : le collaborateur devra revalider.'); }
+  render();
   enqueue(async () => {
     const up = Object.entries(map).filter(([,r]) => r).map(([jour,r]) => ({ collaborateur_id:uid, jour, statut:r.statut, debut:r.debut||null, fin:r.fin||null, pause_min:r.statut==='TRAV' ? (r.pause||0) : null }));
     const del = Object.entries(map).filter(([,r]) => !r).map(([jour]) => jour);
     if(up.length) await upsertChunks('emargements', up, 'collaborateur_id,jour');
     if(del.length) await dbDo(sb.from('emargements').delete().eq('collaborateur_id',uid).in('jour',del));
   });
+}
+const emCanon = (uid, ym, rows) => JSON.stringify([uid, ym, 'emargement', Object.keys(rows).filter(k => k.startsWith(ym)).sort().map(k => { const r = rows[k]; return `${k}=${r.statut}|${r.debut||''}|${r.fin||''}|${r.statut==='TRAV' ? (r.pause||0) : 0}`; })]);
+async function emVerify(){
+  const el = document.getElementById('eminteg'); if(!el) return;
+  const uid = emUid(), ym = el.dataset.ym, rec = (S.em.vals[uid]||{})[ym], rows = S.em.rows[uid];
+  if(!rec || !rec.hash || !rows){ el.textContent = ''; return; }
+  const h = await sha256(emCanon(uid, ym, rows));
+  const e2 = document.getElementById('eminteg'); if(!e2 || e2.dataset.ym!==ym) return;
+  e2.innerHTML = h && h===rec.hash ? '<span class="pill ok">Horaires inchangés depuis la signature</span>' : '<span class="pill dep">Horaires modifiés depuis la signature</span>';
+}
+function emHr(uid){ return S.isAdmin ? (S.hr[uid] || {}) : (S.hasOwn && S.myHr ? S.myHr : { nom:S.me.name, fonction:(S.meRow||{}).fonction||'', restaurant:(S.meRow||{}).restaurant||'', n1:(S.meRow||{}).n1||'' }); }
+function emWeekTotals(rows){ const w = {}; for(const [iso,r] of Object.entries(rows)){ const d = parse(iso), k = `${d.getFullYear()}-${pad(isoWeek(d))}`; w[k] = (w[k]||0) + netMin(r); } return w; }
+function emRowsX(hr, rows, days){
+  const hol = holidays(cyc()), out = [['Collaborateur','Date','Jour','Statut','Début','Fin','Pause (min)','Heures nettes','Observation']];
+  for(const d of days){ const iso = toIso(d), r = rows[iso]; out.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], r ? EM_STATUT[r.statut] : '', r&&r.statut==='TRAV' ? r.debut : '', r&&r.statut==='TRAV' ? r.fin : '', r&&r.statut==='TRAV' ? (r.pause||0) : '', r&&r.statut==='TRAV' ? Math.round(netMin(r)/60*100)/100 : '', hol[iso]||'']); }
+  return out;
+}
+function emReportMonth(uid, rows, hr, rec){
+  const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c); let total = 0, body = '', wk = 0;
+  for(const d of monthDays(mo)){
+    const iso = toIso(d), r = rows[iso], n = netMin(r); total += n; wk += n;
+    body += `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${r ? EM_STATUT[r.statut] : '—'}</td><td>${r&&r.statut==='TRAV' ? esc(r.debut) : ''}</td><td>${r&&r.statut==='TRAV' ? esc(r.fin) : ''}</td><td>${r&&r.statut==='TRAV' ? (r.pause||0)+' min' : ''}</td><td>${n ? hfmt(n) : ''}</td><td>${esc(hol[iso]||'')}</td></tr>`;
+    if(d.getDay()===0 || d.getDate()===new Date(mo.y,mo.m+1,0).getDate()){ body += `<tr><td colspan="6"><b>Total semaine ${isoWeek(d)}</b></td><td><b>${hfmt(wk)}</b></td><td></td></tr>`; wk = 0; }
+  }
+  const sig = rec && rec.valide ? `<div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>${rec.hash ? `<p><small>Empreinte SHA-256 : ${esc(rec.hash)}</small></p>` : ''}` : `<p>Mois non validé.</p>`;
+  return reportHead(hr, `Émargement de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, 'Relevé des horaires de travail') +
+    `<table><thead><tr><th>Date</th><th>Jour</th><th>Statut</th><th>Début</th><th>Fin</th><th>Pause</th><th>Heures</th><th>Observation</th></tr></thead><tbody>${body}</tbody></table>
+    <p><b>Total du mois :</b> ${hfmt(total)}</p>${sig}</div>`;
+}
+function emDownload(kind){
+  const uid = emUid(), rows = S.em.rows[uid]; if(!uid || !rows) return;
+  const hr = emHr(uid), c = cyc(), mo = cycleMonths(c)[S.mi], base = `emargement-${slug(hr.nom)}`;
+  if(kind==='month-pdf') printReport(emReportMonth(uid, rows, hr, (S.em.vals[uid]||{})[mo.ym]));
+  else if(kind==='month-xlsx') saveBlob(`${base}-${mo.ym}.xlsx`, makeXlsx([{ name:'Horaires', rows:emRowsX(hr, rows, monthDays(mo)), widths:[26,22,14,20,8,8,12,14,24] }]));
+  else if(kind==='cycle-xlsx'){
+    const vals = S.em.vals[uid] || {}, recap = [['Mois','Jours travaillés','Heures nettes','Validation']];
+    for(const m of cycleMonths(c)){ let t = 0, n = 0; for(const d of monthDays(m)){ const r = rows[toIso(d)], x = netMin(r); if(x){ t += x; n++; } } const v = vals[m.ym]; recap.push([`${MONTHS[m.m]} ${m.y}`, n, Math.round(t/60*100)/100, v && v.valide ? 'Validé'+(v.visa?' · visé':'') : '']); }
+    saveBlob(`${base}-${cycLabel(c)}.xlsx`, makeXlsx([{ name:'Récapitulatif', rows:recap, widths:[22,16,14,18] }, { name:'Horaires', rows:emRowsX(hr, rows, [...cycleDays(c)]), widths:[26,22,14,20,8,8,12,14,24] }]));
+  }
 }
 function emargView(){
   const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), t = todayIso();
@@ -840,6 +890,7 @@ function emargView(){
       cells += `<button class="${cls}" data-act="em-day" data-v="${iso}" ${r?`data-code="${EM_CODE[r.statut]}"`:''} title="${esc(h || fmtDate(iso))}${n>600?' · plus de 10 h':''}${gapWarn(iso)?' · repos de moins de 11 h':''}"><span class="n">${dt.getDate()}</span><span class="c em">${txt}</span></button>`;
     }
   }
+  const vv = (S.em.vals[uid] || {})[mo.ym] || {}, locked = !!vv.valide, ro = locked && !S.isAdmin;
   let editor = '';
   if(S.em.day && S.em.day.slice(0,7)===mo.ym){
     const iso = S.em.day, dt = parse(iso), dow = ((dt.getDay()+6)%7)+1, ty = htype[dow], r = rows[iso];
@@ -847,15 +898,30 @@ function emargView(){
     editor = `<section class="card" aria-labelledby="em-h"><h3 id="em-h">${esc(fmtDate(iso))}${hol[iso] ? ' · '+esc(hol[iso]) : ''}</h3>
       ${r ? '' : `<p class="muted" style="margin:6px 0 0">Jour non saisi : valeurs proposées ci-dessous${ty || hol[iso] ? ' d’après l’horaire type' : ''}. Enregistrez pour valider.</p>`}
       <div class="form-grid" style="margin-top:12px">
-        <div class="field"><label for="em-s">Statut</label><select id="em-s">${Object.entries(EM_STATUT).map(([k,l]) => `<option value="${k}" ${v.statut===k?'selected':''}>${l}</option>`).join('')}</select></div>
-        <div class="field"><label for="em-d">Début</label><input type="time" id="em-d" value="${esc(v.debut)}"></div>
-        <div class="field"><label for="em-f">Fin</label><input type="time" id="em-f" value="${esc(v.fin)}"></div>
-        <div class="field"><label for="em-p">Pause (minutes)</label><input type="number" id="em-p" min="0" max="600" value="${v.pause||0}"></div>
+        <div class="field"><label for="em-s">Statut</label><select id="em-s" ${ro?'disabled':''}>${Object.entries(EM_STATUT).map(([k,l]) => `<option value="${k}" ${v.statut===k?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label for="em-d">Début</label><input type="time" id="em-d" value="${esc(v.debut)}" ${ro?'disabled':''}></div>
+        <div class="field"><label for="em-f">Fin</label><input type="time" id="em-f" value="${esc(v.fin)}" ${ro?'disabled':''}></div>
+        <div class="field"><label for="em-p">Pause (minutes)</label><input type="number" id="em-p" min="0" max="600" value="${v.pause||0}" ${ro?'disabled':''}></div>
       </div>
-      <div class="row" style="margin-top:14px"><button class="btn primary" data-act="em-save">Enregistrer</button>${ty ? `<button class="btn small" data-act="em-type">Appliquer l'horaire type</button>` : ''}${r ? `<button class="btn small" data-act="em-clear">Effacer ce jour</button>` : ''}<button class="btn small" data-act="em-close">Fermer</button></div>
+      ${ro ? `<p class="note info" style="margin:12px 0 0">Mois validé : la saisie est verrouillée. Contactez la DRH pour une correction.</p><div class="row" style="margin-top:14px"><button class="btn small" data-act="em-close">Fermer</button></div>` : `<div class="row" style="margin-top:14px"><button class="btn primary" data-act="em-save">Enregistrer</button>${ty ? `<button class="btn small" data-act="em-type">Appliquer l'horaire type</button>` : ''}${r ? `<button class="btn small" data-act="em-clear">Effacer ce jour</button>` : ''}<button class="btn small" data-act="em-close">Fermer</button></div>`}
       <p class="muted" style="font-size:12px;margin:10px 0 0">Les heures de début et de fin ne servent que pour le statut « Travail ». Une fin avant le début est comptée sur la nuit.</p></section>`;
   }
   const hasType = Object.keys(htype).length > 0;
+  const tdy = todayIso(); let missing = 0; for(let d=1; d<=dim; d++){ const iso = isoOf(mo.y,mo.m,d); if(iso<=tdy && !rows[iso]) missing++; }
+  const future = new Date(mo.y,mo.m,1) > nowD;
+  const vcard = locked
+    ? `<section class="card" aria-labelledby="emv-h"><div class="row between"><h3 id="emv-h">Validation de ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3><span class="row"><span class="pill ok">Validé</span>${vv.visa ? `<span class="pill info">Visé DRH/N+1</span>` : ''}</span></div>
+        <div class="val-list"><div class="sigs">${sigBox(vv.sig,'Salarié')}${sigBox(vv.visa,'Visa DRH / N+1')}</div>
+        <div id="eminteg" data-ym="${mo.ym}"></div>${vv.hash ? `<small class="muted num" style="word-break:break-all">Empreinte SHA-256 : ${esc(vv.hash)}</small>` : ''}</div>
+        ${S.isAdmin ? (S.signing==='emvisa' ? `<div style="margin-top:12px">${signPanel('emvisa')}</div>` : `<div class="row" style="margin-top:12px">${vv.visa ? '' : `<button class="btn small primary" data-act="sign-open" data-v="emvisa">Viser ce mois</button>`}<button class="btn small" data-act="em-reopen" data-v="${mo.ym}">Rouvrir ce mois</button></div>`) : ''}</section>`
+    : (S.isAdmin ? `<section class="card"><h3>Validation de ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3><p class="muted" style="margin:10px 0 0">Le collaborateur n'a pas encore signé ce mois.</p></section>`
+      : `<section class="card" aria-labelledby="emv-h"><h3 id="emv-h">Validation de ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3>
+        <p class="muted" style="margin:6px 0 0">Chaque fin de mois, confirmez vos horaires puis signez électroniquement.</p>
+        ${vv.reopened ? `<p class="note">La DRH a modifié ce mois le ${fmtDate(String(vv.reopened).slice(0,10))} : vérifiez vos horaires et signez de nouveau.</p>` : ''}
+        ${missing ? `<p class="note">${missing} jour(s) à compléter jusqu'à aujourd'hui.</p>` : ''}${future ? `<p class="note info">Ce mois n'a pas commencé.</p>` : ''}
+        ${S.signing==='emvalidate' ? signPanel('emvalidate') : `<div style="margin-top:12px"><button class="btn primary" data-act="sign-open" data-v="emvalidate" ${missing||future?'disabled':''}>Signer et valider ${MONTHS[mo.m].toLowerCase()}</button></div>`}</section>`);
+  const dlcard = `<section class="card" aria-labelledby="emd-h"><h3 id="emd-h">Télécharger</h3><p class="muted" style="margin:6px 0 10px">Relevé des horaires. Le PDF s'obtient avec « Enregistrer au format PDF » dans la fenêtre d'impression.</p>
+    <div class="row"><button class="btn small" data-act="em-dl" data-v="month-pdf">${MONTHS[mo.m]} · PDF</button><button class="btn small" data-act="em-dl" data-v="month-xlsx">${MONTHS[mo.m]} · Excel</button><button class="btn small" data-act="em-dl" data-v="cycle-xlsx">Cycle ${cycLabel(c)} · Excel</button></div></section>`;
   return `<section class="card" aria-labelledby="emc-h">${picker}
     <div class="monthbar">
       <button class="icon-btn" data-act="month" data-v="-1" aria-label="Mois précédent" ${S.mi===0?'disabled':''}>‹</button>
@@ -867,7 +933,7 @@ function emargView(){
     <div class="row" style="margin-top:14px"><button class="btn small" data-act="em-fill" ${hasType?'':'disabled'}>Remplir les jours vides jusqu'à aujourd'hui avec l'horaire type</button></div>
     ${hasType ? '' : `<p class="muted" style="font-size:12px;margin:8px 0 0">Aucun horaire type n'est défini : la DRH peut le renseigner dans la fiche du collaborateur.</p>`}
     <p class="muted" style="font-size:12px;margin:8px 0 0">Un point rouge signale un jour de plus de 10 h ou un repos de moins de 11 h depuis la veille. Le total d'une semaine est en rouge au-dessus de 48 h.</p>
-  </section>${editor}`;
+  </section>${editor}${vcard}${dlcard}`;
 }
 
 function settingsView(){
@@ -1087,7 +1153,7 @@ function exportCsv(){
 }
 function defaultFor(d, hol){ const iso = toIso(d); return hol[iso] ? 'JF' : (d.getDay()===0||d.getDay()===6) ? 'OFF' : 'JT'; }
 async function changeCycle(c){
-  S.cycle = c; S.mi = defaultMonthIndex(c); S.signing = null; padStrokes = []; S.em.rows = {}; S.em.day = null;
+  S.cycle = c; S.mi = defaultMonthIndex(c); S.signing = null; padStrokes = []; S.em.rows = {}; S.em.vals = {}; S.em.day = null;
   S.loading = true; render();
   try { await loadData(); } catch(e){ toast(msg(e)); }
   S.loading = false; render();
@@ -1142,6 +1208,7 @@ $app.addEventListener('click', ev => {
   else if(act==='ht-copy'){ for(let i=2;i<=5;i++) for(const k of ['d','f','p']) document.getElementById(`ht-${k}-${i}`).value = document.getElementById(`ht-${k}-1`).value; }
   else if(act==='em-save' || act==='em-clear' || act==='em-type' || act==='em-fill'){
     const uid = emUid(), rows = S.em.rows[uid]; if(!uid || !rows) return;
+    if(!S.isAdmin && ((S.em.vals[uid]||{})[(S.em.day||mo.ym).slice(0,7)]||{}).valide){ toast('Mois validé : saisie verrouillée.'); return; }
     const htype = (S.isAdmin ? (S.hr[uid] && S.hr[uid].htype) : (S.meRow && S.meRow.horaire_type)) || {};
     if(act==='em-clear') emSet(uid, { [S.em.day]: null });
     else if(act==='em-save'){
@@ -1202,6 +1269,14 @@ $app.addEventListener('click', ev => {
         const hash = await sha256(canonical(S.myCycle, S.uid, mo.ym, rec));
         await dbDo(sb.from('validations').upsert({ collaborateur_id:S.uid, mois:mo.ym, valide:true, r11:rec.r11, r35:rec.r35, equilibre:rec.equilibre, charge:rec.charge, commentaire:rec.comment, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
         await loadData(); render(); toast('Mois signé et validé.');
+      } else if(kind==='emvalidate'){
+        const uid = emUid(), hash = await sha256(emCanon(uid, mo.ym, S.em.rows[uid] || {}));
+        await dbDo(sb.from('emarg_validations').upsert({ collaborateur_id:uid, mois:mo.ym, valide:true, empreinte:hash, signature:{ strokes, name, at } }, { onConflict:'collaborateur_id,mois' }));
+        delete S.em.rows[uid]; render(); toast('Mois signé et validé.');
+      } else if(kind==='emvisa'){
+        const uid = emUid(), base = (S.em.vals[uid]||{})[mo.ym] || {};
+        await dbDo(sb.from('emarg_validations').update({ visa:{ at, by:S.uid, name, strokes, of:base.hash||'' } }).eq('collaborateur_id',uid).eq('mois',mo.ym));
+        delete S.em.rows[uid]; render(); toast('Mois visé.');
       } else if(kind==='visa'){
         const uid = S.viewUid, base = ((S.allDocs[uid]||emptyCycle()).months[mo.ym]) || {};
         await dbDo(sb.from('validations').update({ visa:{ at, by:S.uid, name, strokes, of:base.hash||'' } }).eq('collaborateur_id',uid).eq('mois',mo.ym));
@@ -1217,6 +1292,14 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='open'){ S.viewUid=v; S.mi = defaultMonthIndex(c); render(); if(S.isAdmin) loadHistory(v).then(safeRender).catch(() => {}); }
   else if(act==='back'){ S.viewUid=null; S.confirmDel=null; render(); }
+  else if(act==='em-dl') emDownload(v);
+  else if(act==='em-reopen'){
+    const uid = emUid();
+    enqueue(async () => {
+      await dbDo(sb.from('emarg_validations').update({ valide:false, visa:null, signature:null, empreinte:null, signe_le:null, reouvert_le:new Date().toISOString() }).eq('collaborateur_id',uid).eq('mois',v));
+      delete S.em.rows[uid]; render(); toast('Mois rouvert pour le collaborateur.');
+    });
+  }
   else if(act==='reopen'){
     const uid = S.viewUid;
     enqueue(async () => {

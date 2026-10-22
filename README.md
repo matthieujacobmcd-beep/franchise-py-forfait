@@ -91,3 +91,5 @@ Le mois en cours peut être signé avant son terme (par exemple pour la paie) : 
 
 ## Émargement des horaires (collaborateurs hors forfait jours)
 Cocher « Suit son temps de travail (émargement des horaires) » dans la fiche, et renseigner l'horaire type (début, fin, pause par jour de la semaine). La personne saisit ensuite ses horaires jour par jour dans l'onglet « Mon émargement » (calendrier mensuel, totaux hebdomadaires). Migration : `supabase/migration_emargement.sql`.
+
+L'émargement mensuel se signe électroniquement (migration `supabase/migration_emargement_validation.sql`) ; la DRH peut viser ou rouvrir un mois. Exports Excel (mois, cycle) et PDF (mois).
