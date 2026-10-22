@@ -671,7 +671,9 @@ function heatTable(rows){
     if(key==='JT') return '';
     const doc = S.allDocs[uid] || emptyCycle(), out = [];
     for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d), e = doc.reel[iso] || doc.prev[iso] || ''; if(codes.includes(e) && !(doc.from && iso < doc.from)) out.push(d); }
-    return out.length ? `${out.join(', ')} ${MONTHS[mo.m].toLowerCase()}` : '';
+    if(!out.length) return '';
+    const parts = []; for(let i=0; i<out.length; ){ let j = i; while(j+1 < out.length && out[j+1]===out[j]+1) j++; parts.push(j>i ? `du ${out[i]} au ${out[j]}` : `le ${out[i]}`); i = j+1; }
+    return `${parts.length>1 ? parts.slice(0,-1).join(', ')+' et '+parts[parts.length-1] : parts[0]} ${MONTHS[mo.m].toLowerCase()}`;
   };
   const body = rows.filter(r => r.started).map(r => `<tr><td class="name">${esc(nameOf(r.uid))}</td>${ms.map((mo,i) => {
     const v = codes.reduce((t,k) => t + ((r.sum.per[k]||[])[i]||0), 0), a = Math.round(Math.min(1,v/mx)*70), tip = v ? dates(r.uid, mo) : '';
