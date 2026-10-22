@@ -254,3 +254,8 @@ td.r,th.r{text-align:right}
 .cprow{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--line)}
 .cprow:first-of-type{margin-top:8px}
 .cpact{display:grid;gap:8px;min-width:240px;max-width:100%}
+.heat td.tip{position:relative;cursor:default}
+.heat td.tip::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 4px);transform:translateX(-50%);z-index:20;min-width:60px;max-width:240px;width:max-content;white-space:normal;padding:6px 10px;border-radius:8px;background:var(--ink);color:var(--bg);font:500 12px/1.35 var(--body);text-align:center;box-shadow:0 4px 14px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .12s}
+.heat td.tip:hover::after,.heat td.tip:focus::after{opacity:1}
+.heat tbody tr:first-child td.tip::after{bottom:auto;top:calc(100% + 4px)}
+.heat td.tip:nth-last-child(-n+3)::after{left:auto;right:0;transform:none}

@@ -85,7 +85,7 @@ const normCycle = d => ({ prev:(d&&d.prev)||{}, reel:(d&&d.reel)||{}, months:(d&
 function summarize(doc, c){
   const prev = doc.prev||{}, reel = doc.reel||{}, months = doc.months||{}, from = doc.from||'';
   const ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
-  const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0) };
+  const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0), AM:Array(12).fill(0), AT:Array(12).fill(0), ABS:Array(12).fill(0) };
   const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0, ABS:0 };
   let blank=0, coded=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0;
   const hol = holidays(c);
@@ -666,13 +666,19 @@ function addPanel(){
 }
 
 function heatTable(rows){
-  const ms = cycleMonths(cyc()), key = S.heat, mx = key==='JT' ? 31 : key==='OFF' ? 12 : 12;
-  const body = rows.filter(r => r.started).map(r => `<tr><td class="name">${esc(nameOf(r.uid))}</td>${ms.map((_,i) => {
-    const v = (r.sum.per[key]||[])[i]||0, a = Math.round(Math.min(1,v/mx)*70);
-    return `<td style="background:color-mix(in srgb, var(--accent) ${a}%, transparent)">${v||'·'}</td>`; }).join('')}</tr>`).join('');
+  const ms = cycleMonths(cyc()), key = S.heat, mx = key==='JT' ? 31 : 12, codes = key==='AM' ? ['AM','AT','ABS'] : [key];
+  const dates = (uid, mo) => {   // dates du mois portant ce code (réel, sinon prévu) : pas d'infobulle pour les jours travaillés
+    if(key==='JT') return '';
+    const doc = S.allDocs[uid] || emptyCycle(), out = [];
+    for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d), e = doc.reel[iso] || doc.prev[iso] || ''; if(codes.includes(e) && !(doc.from && iso < doc.from)) out.push(d); }
+    return out.length ? `${out.join(', ')} ${MONTHS[mo.m].toLowerCase()}` : '';
+  };
+  const body = rows.filter(r => r.started).map(r => `<tr><td class="name">${esc(nameOf(r.uid))}</td>${ms.map((mo,i) => {
+    const v = codes.reduce((t,k) => t + ((r.sum.per[k]||[])[i]||0), 0), a = Math.round(Math.min(1,v/mx)*70), tip = v ? dates(r.uid, mo) : '';
+    return `<td ${tip ? `class="tip" tabindex="0" data-tip="${esc(tip)}"` : ''} style="background:color-mix(in srgb, var(--accent) ${a}%, transparent)">${v||'·'}</td>`; }).join('')}</tr>`).join('');
   if(!body) return '';
   return `<section class="card"><div class="row between"><h2>Vue mois par mois</h2>
-    <div class="field" style="min-width:200px"><label for="heat">Indicateur</label><select id="heat" data-heat><option value="JT" ${key==='JT'?'selected':''}>Jours travaillés</option><option value="CP" ${key==='CP'?'selected':''}>Congés payés</option><option value="RTT" ${key==='RTT'?'selected':''}>RTT</option><option value="OFF" ${key==='OFF'?'selected':''}>Jours OFF</option></select></div></div>
+    <div class="field" style="min-width:200px"><label for="heat">Indicateur</label><select id="heat" data-heat><option value="JT" ${key==='JT'?'selected':''}>Jours travaillés</option><option value="CP" ${key==='CP'?'selected':''}>Congés payés</option><option value="RTT" ${key==='RTT'?'selected':''}>RTT</option><option value="AM" ${key==='AM'?'selected':''}>Arrêts maladie / AT</option><option value="OFF" ${key==='OFF'?'selected':''}>Jours OFF</option></select></div></div>
     <div class="tablewrap" style="margin-top:12px"><table class="heat" style="min-width:760px"><thead><tr><th>Collaborateur</th>${ms.map(m => `<th style="text-align:center">${MSHORT[m.m]}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div></section>`;
 }
 
