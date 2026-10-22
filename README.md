@@ -88,3 +88,6 @@ Renseigner la **date d'entrée** dans la fiche du collaborateur. Les jours avant
 
 ## Validation avant la fin du mois
 Le mois en cours peut être signé avant son terme (par exemple pour la paie) : les jours à venir sont validés tels que planifiés. Toute modification ultérieure demande à la DRH de rouvrir le mois.
+
+## Émargement des horaires (collaborateurs hors forfait jours)
+Cocher « Suit son temps de travail (émargement des horaires) » dans la fiche, et renseigner l'horaire type (début, fin, pause par jour de la semaine). La personne saisit ensuite ses horaires jour par jour dans l'onglet « Mon émargement » (calendrier mensuel, totaux hebdomadaires). Migration : `supabase/migration_emargement.sql`.

@@ -31,7 +31,7 @@ const S = {
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
   viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
-  adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
+  em:{ rows:{}, loading:{}, day:null, sel:null }, hasEmarg:false, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
 
@@ -266,7 +266,7 @@ function buildDocs(jours, vals){
 }
 function buildHr(rows, quotas){
   const out = {};
-  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
+  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, emarg:!!r.emargement, htype:r.horaire_type||null, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
   for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt, cpa:q.cp_anticipe };
   return out;
 }
@@ -356,10 +356,10 @@ async function startSession(){
   const { data:me, error } = await sb.from('collaborateurs').select('*').eq('user_id', session.user.id).maybeSingle();
   if(error){ S.fatal = 'error'; S.loading = false; render(); return; }
   if(!me || !me.actif){ S.session = session; S.fatal = 'unregistered'; S.loading = false; render(); return; }
-  S.session = session; S.meRow = me; S.uid = me.id; S.role = me.role; S.isAdmin = me.role === 'admin'; S.consult = me.role === 'superviseur' || me.role === 'lecteur'; S.hasOwn = me.role !== 'lecteur'; S.me = { name:me.nom, email:me.email };
+  S.session = session; S.meRow = me; S.uid = me.id; S.role = me.role; S.isAdmin = me.role === 'admin'; S.consult = me.role === 'superviseur' || me.role === 'lecteur'; S.hasOwn = me.role !== 'lecteur'; S.hasEmarg = !!me.emargement; S.me = { name:me.nom, email:me.email };
   await loadSettings(); S.cycle = S.settings.cycle; S.mi = defaultMonthIndex(S.cycle);
   await loadData();
-  S.tab = (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
+  S.tab = (!S.isAdmin && S.hasEmarg && !S.hasOwn) ? 'emarg' : (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
   if(S.hasOwn) loadHistory(S.uid).then(safeRender).catch(() => {});
   bumpIdle();
 }
@@ -402,7 +402,9 @@ function header(){
   const c = cyc();
   const tabs = [];
   if(S.hasOwn) tabs.push(['me','Mon suivi']);
+  if(S.hasEmarg && !S.isAdmin) tabs.push(['emarg','Mon émargement']);
   if(S.isAdmin || S.consult) tabs.push(['team', 'Équipe']);
+  if(S.isAdmin) tabs.push(['emarg','Émargement']);
   if(S.isAdmin) tabs.push(['settings','Réglages']);
   return `<header class="top">
     <div class="top-row">
@@ -753,6 +755,10 @@ function detailView(){
       ${hr.role==='lecteur' ? '' : f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
       ${f('hr-entree',"Date d'entrée (si arrivée en cours de cycle)",hr.entree||'','date')}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
+      <div style="grid-column:1/-1"><label class="row" style="gap:8px"><input type="checkbox" id="hr-emarg" style="width:auto" ${hr.emarg?'checked':''}><span><b>Suit son temps de travail (émargement des horaires)</b>, pour les collaborateurs hors forfait jours</span></label>
+        <div class="htype"><b>Horaire type</b> <small class="muted">(les deux heures vides = jour de repos)</small>
+          ${DOW.map((d,i) => { const x = (hr.htype && hr.htype[i+1]) || {}; return `<div class="hrow"><span>${d}</span><input type="time" id="ht-d-${i+1}" value="${esc(x.d||'')}" aria-label="Début ${d}"><input type="time" id="ht-f-${i+1}" value="${esc(x.f||'')}" aria-label="Fin ${d}"><input type="number" id="ht-p-${i+1}" min="0" max="240" value="${esc(x.p ?? '')}" placeholder="pause (min)" aria-label="Pause ${d}"></div>`; }).join('')}
+          <button type="button" class="btn small" data-act="ht-copy">Copier le lundi sur mardi–vendredi</button></div></div>
     </div>
     <div class="row" style="margin-top:14px"><button class="btn primary" data-act="save-hr">Enregistrer la fiche</button>
       ${archived ? `<button class="btn" data-act="restore">Réintégrer</button>` : `<button class="btn" data-act="archive">Retirer du suivi</button>`}
@@ -766,6 +772,103 @@ function detailView(){
   return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
 }
 
+
+// ---------- émargement des horaires (collaborateurs hors forfait jours)
+const EM_STATUT = { TRAV:'Travail', REPOS:'Repos', CP:'Congé payé', AM:'Arrêt maladie', AT:'Accident du travail', JF:'Férié non travaillé' };
+const EM_CODE = { TRAV:'JT', REPOS:'OFF', CP:'CP', AM:'AM', AT:'AT', JF:'JF' };
+const tmin = t => { if(!t) return null; const [h,m] = t.split(':').map(Number); return h*60+m; };
+const netMin = r => { if(!r || r.statut!=='TRAV' || !r.debut || !r.fin) return 0; const d = tmin(r.debut); let f = tmin(r.fin); if(f<=d) f += 1440; return Math.max(0, f-d-(r.pause||0)); };
+const hfmt = m => `${Math.floor(m/60)}h${pad(m%60)}`;
+function readHtype(){
+  const out = {};
+  for(let i=1;i<=7;i++){
+    const d = document.getElementById('ht-d-'+i).value, f = document.getElementById('ht-f-'+i).value, p = document.getElementById('ht-p-'+i).value;
+    if(d && f) out[i] = { d, f, p:Number(p)||0 };
+  }
+  return Object.keys(out).length ? out : null;
+}
+function emUid(){ return S.isAdmin ? S.em.sel : S.uid; }
+function emEnsure(uid){
+  if(!uid || S.em.rows[uid] || S.em.loading[uid]) return;
+  S.em.loading[uid] = true;
+  const { from, to } = cycleRange(cyc());
+  fetchPages(() => sb.from('emargements').select('jour,statut,debut,fin,pause_min').eq('collaborateur_id',uid).gte('jour',from).lte('jour',to).order('jour'))
+    .then(rows => { const m = {}; for(const r of rows) m[r.jour] = { statut:r.statut, debut:r.debut ? r.debut.slice(0,5) : '', fin:r.fin ? r.fin.slice(0,5) : '', pause:r.pause_min ?? 0 }; S.em.rows[uid] = m; })
+    .catch(e => { toast(msg(e)); S.em.rows[uid] = {}; })
+    .finally(() => { S.em.loading[uid] = false; safeRender(); });
+}
+function emSet(uid, map){
+  const cur = S.em.rows[uid] || {}, next = { ...cur };
+  for(const [d,r] of Object.entries(map)){ if(r) next[d] = r; else delete next[d]; }
+  S.em.rows[uid] = next; render();
+  enqueue(async () => {
+    const up = Object.entries(map).filter(([,r]) => r).map(([jour,r]) => ({ collaborateur_id:uid, jour, statut:r.statut, debut:r.debut||null, fin:r.fin||null, pause_min:r.statut==='TRAV' ? (r.pause||0) : null }));
+    const del = Object.entries(map).filter(([,r]) => !r).map(([jour]) => jour);
+    if(up.length) await upsertChunks('emargements', up, 'collaborateur_id,jour');
+    if(del.length) await dbDo(sb.from('emargements').delete().eq('collaborateur_id',uid).in('jour',del));
+  });
+}
+function emargView(){
+  const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), t = todayIso();
+  let picker = '';
+  if(S.isAdmin){
+    const list = Object.entries(S.hr).filter(([,h]) => h.emarg && h.actif!==false).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
+    if(!list.length) return `<div class="card empty"><b>Aucun collaborateur en émargement</b>Ouvrez la fiche d'une personne (onglet Équipe) et cochez « Suit son temps de travail (émargement des horaires) ».</div>`;
+    if(!S.em.sel || !S.hr[S.em.sel] || !S.hr[S.em.sel].emarg) S.em.sel = list[0][0];
+    picker = `<div class="field" style="max-width:340px;margin-bottom:12px"><label for="em-sel">Collaborateur</label><select id="em-sel" data-emsel>${list.map(([id,h]) => `<option value="${esc(id)}" ${id===S.em.sel?'selected':''}>${esc(h.nom)}</option>`).join('')}</select></div>`;
+  }
+  const uid = emUid();
+  emEnsure(uid);
+  const rows = S.em.rows[uid];
+  if(!rows) return `<section class="card">${picker}<p class="muted" style="margin:0">Chargement de l'émargement…</p></section>`;
+  const htype = (S.isAdmin ? (S.hr[uid] && S.hr[uid].htype) : (S.meRow && S.meRow.horaire_type)) || {};
+  const first = new Date(mo.y,mo.m,1), lead = (first.getDay()+6)%7, dim = new Date(mo.y,mo.m+1,0).getDate(), weeks = Math.ceil((lead+dim)/7);
+  const gapWarn = iso => { const r = rows[iso]; if(!r || r.statut!=='TRAV' || !r.debut) return false; const p = new Date(parse(iso)); p.setDate(p.getDate()-1); const q = rows[toIso(p)]; if(!q || q.statut!=='TRAV' || !q.fin) return false; let end = tmin(q.fin); if(end <= tmin(q.debut)) end += 1440; return (1440 + tmin(r.debut) - end) < 660; };
+  let cells = `<div></div>` + DOW.map(d => `<div class="hd">${d}</div>`).join(''), total = 0, worked = 0;
+  for(let w=0; w<weeks; w++){
+    const monday = new Date(mo.y,mo.m,1-lead+w*7); let wt = 0;
+    for(let d=0; d<7; d++){ const x = new Date(monday); x.setDate(x.getDate()+d); wt += netMin(rows[toIso(x)]); }
+    cells += `<div class="wk wkt ${wt>2880?'over':''}" title="Total de la semaine ${isoWeek(monday)}${wt>2880?' : au-dessus de 48 h':''}">S${isoWeek(monday)}<br><b>${wt ? hfmt(wt) : '—'}</b></div>`;
+    for(let d=0; d<7; d++){
+      const dt = new Date(mo.y,mo.m,1-lead+w*7+d);
+      if(dt.getMonth()!==mo.m){ cells += `<div class="day blank"></div>`; continue; }
+      const iso = toIso(dt), r = rows[iso], h = hol[iso], n = netMin(r);
+      if(n){ total += n; worked++; }
+      const txt = r ? (r.statut==='TRAV' ? `${r.debut.replace(/^0/,'')}–${r.fin.replace(/^0/,'')}<br><b>${hfmt(n)}</b>` : EM_STATUT[r.statut]) : '';
+      const warn = n > 600 || gapWarn(iso);
+      const cls = ['day', d>=5?'we':'', h?'hol':'', iso===t?'today':'', iso===S.em.day?'sel':'', warn?'warn':''].filter(Boolean).join(' ');
+      cells += `<button class="${cls}" data-act="em-day" data-v="${iso}" ${r?`data-code="${EM_CODE[r.statut]}"`:''} title="${esc(h || fmtDate(iso))}${n>600?' · plus de 10 h':''}${gapWarn(iso)?' · repos de moins de 11 h':''}"><span class="n">${dt.getDate()}</span><span class="c em">${txt}</span></button>`;
+    }
+  }
+  let editor = '';
+  if(S.em.day && S.em.day.slice(0,7)===mo.ym){
+    const iso = S.em.day, dt = parse(iso), dow = ((dt.getDay()+6)%7)+1, ty = htype[dow], r = rows[iso];
+    const v = r || (hol[iso] ? { statut:'JF', debut:'', fin:'', pause:0 } : ty ? { statut:'TRAV', debut:ty.d, fin:ty.f, pause:ty.p||0 } : { statut:'REPOS', debut:'', fin:'', pause:0 });
+    editor = `<section class="card" aria-labelledby="em-h"><h3 id="em-h">${esc(fmtDate(iso))}${hol[iso] ? ' · '+esc(hol[iso]) : ''}</h3>
+      ${r ? '' : `<p class="muted" style="margin:6px 0 0">Jour non saisi : valeurs proposées ci-dessous${ty || hol[iso] ? ' d’après l’horaire type' : ''}. Enregistrez pour valider.</p>`}
+      <div class="form-grid" style="margin-top:12px">
+        <div class="field"><label for="em-s">Statut</label><select id="em-s">${Object.entries(EM_STATUT).map(([k,l]) => `<option value="${k}" ${v.statut===k?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label for="em-d">Début</label><input type="time" id="em-d" value="${esc(v.debut)}"></div>
+        <div class="field"><label for="em-f">Fin</label><input type="time" id="em-f" value="${esc(v.fin)}"></div>
+        <div class="field"><label for="em-p">Pause (minutes)</label><input type="number" id="em-p" min="0" max="600" value="${v.pause||0}"></div>
+      </div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" data-act="em-save">Enregistrer</button>${ty ? `<button class="btn small" data-act="em-type">Appliquer l'horaire type</button>` : ''}${r ? `<button class="btn small" data-act="em-clear">Effacer ce jour</button>` : ''}<button class="btn small" data-act="em-close">Fermer</button></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Les heures de début et de fin ne servent que pour le statut « Travail ». Une fin avant le début est comptée sur la nuit.</p></section>`;
+  }
+  const hasType = Object.keys(htype).length > 0;
+  return `<section class="card" aria-labelledby="emc-h">${picker}
+    <div class="monthbar">
+      <button class="icon-btn" data-act="month" data-v="-1" aria-label="Mois précédent" ${S.mi===0?'disabled':''}>‹</button>
+      <h2 id="emc-h">Émargement · ${MONTHS[mo.m]} ${mo.y}</h2>
+      <button class="icon-btn" data-act="month" data-v="1" aria-label="Mois suivant" ${S.mi===11?'disabled':''}>›</button>
+    </div>
+    <p class="muted" style="margin:10px 0;text-align:center">Touchez un jour pour saisir vos horaires. Total du mois : <b>${hfmt(total)}</b> sur ${worked} jour(s) travaillé(s).</p>
+    <div class="cal">${cells}</div>
+    <div class="row" style="margin-top:14px"><button class="btn small" data-act="em-fill" ${hasType?'':'disabled'}>Remplir les jours vides jusqu'à aujourd'hui avec l'horaire type</button></div>
+    ${hasType ? '' : `<p class="muted" style="font-size:12px;margin:8px 0 0">Aucun horaire type n'est défini : la DRH peut le renseigner dans la fiche du collaborateur.</p>`}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">Un point rouge signale un jour de plus de 10 h ou un repos de moins de 11 h depuis la veille. Le total d'une semaine est en rouge au-dessus de 48 h.</p>
+  </section>${editor}`;
+}
 
 function settingsView(){
   const s = S.settings, cy = curCycle();
@@ -828,6 +931,7 @@ function render(){
     if(S.tab==='team' && S.isAdmin) body = S.viewUid ? detailView() : teamView();
     else if(S.tab==='team' && S.consult) body = S.viewUid ? consultDetailView() : teamView();
     else if(S.tab==='settings' && S.isAdmin) body = settingsView();
+    else if(S.tab==='emarg' && (S.isAdmin || S.hasEmarg)) body = emargView();
     else if(!S.hasOwn) body = teamView();
     else body = employeeView({ uid:S.uid, doc:S.myCycle, hr:S.myHr, readonly:false, isAdmin:S.isAdmin });
   }
@@ -983,7 +1087,7 @@ function exportCsv(){
 }
 function defaultFor(d, hol){ const iso = toIso(d); return hol[iso] ? 'JF' : (d.getDay()===0||d.getDay()===6) ? 'OFF' : 'JT'; }
 async function changeCycle(c){
-  S.cycle = c; S.mi = defaultMonthIndex(c); S.signing = null; padStrokes = [];
+  S.cycle = c; S.mi = defaultMonthIndex(c); S.signing = null; padStrokes = []; S.em.rows = {}; S.em.day = null;
   S.loading = true; render();
   try { await loadData(); } catch(e){ toast(msg(e)); }
   S.loading = false; render();
@@ -1033,6 +1137,32 @@ $app.addEventListener('click', ev => {
   const val = id => document.getElementById(id).value.trim();
   if(act==='tab'){ S.tab=v; S.viewUid=null; S.signing=null; render(); }
   else if(act==='month'){ S.mi = Math.min(11, Math.max(0, S.mi + Number(v))); S.signing=null; padStrokes=[]; render(); }
+  else if(act==='em-day'){ S.em.day = v; render(); }
+  else if(act==='em-close'){ S.em.day = null; render(); }
+  else if(act==='ht-copy'){ for(let i=2;i<=5;i++) for(const k of ['d','f','p']) document.getElementById(`ht-${k}-${i}`).value = document.getElementById(`ht-${k}-1`).value; }
+  else if(act==='em-save' || act==='em-clear' || act==='em-type' || act==='em-fill'){
+    const uid = emUid(), rows = S.em.rows[uid]; if(!uid || !rows) return;
+    const htype = (S.isAdmin ? (S.hr[uid] && S.hr[uid].htype) : (S.meRow && S.meRow.horaire_type)) || {};
+    if(act==='em-clear') emSet(uid, { [S.em.day]: null });
+    else if(act==='em-save'){
+      const st = val('em-s'), r = { statut:st, debut: st==='TRAV' ? val('em-d') : '', fin: st==='TRAV' ? val('em-f') : '', pause: st==='TRAV' ? (Number(val('em-p'))||0) : 0 };
+      if(st==='TRAV' && (!r.debut || !r.fin)){ toast("Indiquez l'heure de début et de fin."); return; }
+      emSet(uid, { [S.em.day]: r }); toast('Journée enregistrée.');
+    }
+    else if(act==='em-type'){
+      const dow = ((parse(S.em.day).getDay()+6)%7)+1, ty = htype[dow];
+      emSet(uid, { [S.em.day]: ty ? { statut:'TRAV', debut:ty.d, fin:ty.f, pause:ty.p||0 } : { statut:'REPOS', debut:'', fin:'', pause:0 } });
+    }
+    else {
+      const map = {}, hol = holidays(c), t = todayIso();
+      for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){
+        const dt = new Date(mo.y,mo.m,d), iso = toIso(dt); if(iso>t || rows[iso]) continue;
+        const ty = htype[((dt.getDay()+6)%7)+1];
+        map[iso] = hol[iso] ? { statut:'JF', debut:'', fin:'', pause:0 } : ty ? { statut:'TRAV', debut:ty.d, fin:ty.f, pause:ty.p||0 } : { statut:'REPOS', debut:'', fin:'', pause:0 };
+      }
+      if(Object.keys(map).length){ emSet(uid, map); toast('Jours remplis avec l\'horaire type.'); } else toast('Aucun jour vide jusqu\'à aujourd\'hui.');
+    }
+  }
   else if(act==='brush'){ S.brush=v; render(); }
   else if(act==='layer'){ S.layer=v; render(); }
   else if(act==='day'){
@@ -1096,7 +1226,7 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='save-hr'){
     const uid = S.viewUid;
-    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
+    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, emargement:document.getElementById('hr-emarg').checked, horaire_type:readHtype(), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt'), cp_anticipe:numOrNull('hr-cpa') };
@@ -1142,7 +1272,8 @@ $app.addEventListener('input', ev => {
 });
 $app.addEventListener('change', ev => {
   const t = ev.target;
-  if(t.dataset.filter==='fRest'){ S.fRest=t.value; render(); }
+  if(t.dataset.emsel!==undefined){ S.em.sel=t.value; S.em.day=null; render(); }
+  else if(t.dataset.filter==='fRest'){ S.fRest=t.value; render(); }
   else if(t.dataset.filter==='fStatus'){ S.fStatus=t.value; render(); }
   else if(t.dataset.filter==='showArchived'){ S.showArchived=t.value==='1'; render(); }
   else if(t.dataset.heat!==undefined){ S.heat=t.value; render(); }
