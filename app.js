@@ -793,8 +793,8 @@ function detailView(){
     </div>
     <p class="muted" style="font-size:12px;margin:10px 0 0">Une case vide applique la valeur par défaut des Réglages, proratisée si une date d'entrée tombe dans le cycle. Les quotas sont propres au cycle affiché. « Retirer du suivi » conserve l'historique et bloque l'accès de la personne.</p></section>`;
   const doc = S.allDocs[uid] || emptyCycle();
-  if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit en lecture seule les plannings de son niveau et des niveaux inférieurs et n'a pas de forfait jours à saisir.</p>`;
-  return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true });
+  if(hr.role==='lecteur') return head + form + `<p class="note info">Accès de consultation : cette personne voit en lecture seule les plannings de son niveau et des niveaux inférieurs et n'a pas de forfait jours à saisir.</p>` + (hr.emarg ? emargView() : '');
+  return head + form + `<p class="muted" style="margin:0">Vous pouvez modifier le planning ci-dessous. Modifier un mois validé annule sa validation : le collaborateur devra revalider.</p>` + employeeView({ uid, doc, hr, readonly:true, edit:true, isAdmin:true }) + (hr.emarg ? emargView() : '');
 }
 
 
@@ -813,7 +813,8 @@ function readHtype(){
   return Object.keys(out).length ? out : null;
 }
 function emRepas(uid){ return !!(S.isAdmin ? (S.hr[uid] && S.hr[uid].repas) : (S.meRow && S.meRow.repas)); }
-function emUid(){ return S.isAdmin ? S.em.sel : S.uid; }
+const emEmbedded = () => S.isAdmin && S.tab==='team' && !!S.viewUid;   // émargement ouvert depuis la fiche d'un collaborateur
+function emUid(){ return S.isAdmin ? (emEmbedded() ? S.viewUid : S.em.sel) : S.uid; }
 function emEnsure(uid){
   if(!uid || S.em.rows[uid] || S.em.loading[uid]) return;
   S.em.loading[uid] = true;
@@ -885,7 +886,7 @@ function emDownload(kind){
 function emargView(){
   const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), t = todayIso();
   let picker = '';
-  if(S.isAdmin){
+  if(S.isAdmin && !emEmbedded()){
     const list = Object.entries(S.hr).filter(([,h]) => h.emarg && h.actif!==false).sort((a,b) => nameOf(a[0]).localeCompare(nameOf(b[0]),'fr'));
     if(!list.length) return `<div class="card empty"><b>Aucun collaborateur en émargement</b>Ouvrez la fiche d'une personne (onglet Équipe) et cochez « Suit son temps de travail (émargement des horaires) ».</div>`;
     if(!S.em.sel || !S.hr[S.em.sel] || !S.hr[S.em.sel].emarg) S.em.sel = list[0][0];
@@ -948,7 +949,7 @@ function emargView(){
         ${S.signing==='emvalidate' ? signPanel('emvalidate') : `<div style="margin-top:12px"><button class="btn primary" data-act="sign-open" data-v="emvalidate" ${missing||future?'disabled':''}>Signer et valider ${MONTHS[mo.m].toLowerCase()}</button></div>`}</section>`);
   const dlcard = `<section class="card" aria-labelledby="emd-h"><h3 id="emd-h">Télécharger</h3><p class="muted" style="margin:6px 0 10px">Relevé des horaires. Le PDF s'obtient avec « Enregistrer au format PDF » dans la fenêtre d'impression.</p>
     <div class="row"><button class="btn small" data-act="em-dl" data-v="month-pdf">${MONTHS[mo.m]} · PDF</button><button class="btn small" data-act="em-dl" data-v="month-xlsx">${MONTHS[mo.m]} · Excel</button><button class="btn small" data-act="em-dl" data-v="cycle-xlsx">Cycle ${cycLabel(c)} · Excel</button></div></section>`;
-  return `<section class="card" aria-labelledby="emc-h">${picker}
+  return `${emEmbedded() ? `<h2 style="margin:18px 0 0">Émargement des horaires · ${esc(nameOf(uid))}</h2>` : ''}<section class="card" aria-labelledby="emc-h">${picker}
     <div class="monthbar">
       <button class="icon-btn" data-act="month" data-v="-1" aria-label="Mois précédent" ${S.mi===0?'disabled':''}>‹</button>
       <h2 id="emc-h">Émargement · ${MONTHS[mo.m]} ${mo.y}</h2>
