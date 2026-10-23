@@ -31,7 +31,7 @@ const S = {
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
   viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
-  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, cp:{ list:[] }, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
+  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, emAll:{}, cp:{ list:[] }, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
 
@@ -287,6 +287,10 @@ async function loadData(){
     ]);
     for(const x of [cols, qs, vals]) if(x.error) throw x.error;
     S.hr = buildHr(cols.data, qs.data); S.allDocs = buildDocs(jours, vals.data);
+    try {   // émargement des collaborateurs hors forfait jours : pour la vue mois par mois
+      const em = await fetchPages(() => sb.from('emargements').select('collaborateur_id,jour,statut').gte('jour',from).lte('jour',to).order('collaborateur_id').order('jour'));
+      S.emAll = {}; for(const r of em) (S.emAll[r.collaborateur_id] = S.emAll[r.collaborateur_id] || {})[r.jour] = r.statut;
+    } catch(e){ S.emAll = {}; }
   } else {
     let hr = {}, docs = {};
     if(S.hasOwn){
@@ -667,16 +671,23 @@ function addPanel(){
 
 function heatTable(rows){
   const ms = cycleMonths(cyc()), key = S.heat, mx = key==='JT' ? 31 : 12, codes = key==='AM' ? ['AM','AT','ABS'] : [key];
+  const EMC = { TRAV:'JT', REPOS:'OFF', CP:'CP', AM:'AM', AT:'AT', JF:'JF' };
+  const codeAt = (uid, iso) => { const em = S.emAll[uid]; if(em && S.hr[uid] && S.hr[uid].role==='lecteur') return EMC[em[iso]] || ''; const doc = S.allDocs[uid] || emptyCycle(); return (doc.reel[iso] || doc.prev[iso] || ''); };
+  const daysOf = (uid, mo) => { const doc = S.allDocs[uid] || emptyCycle(), out = []; for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d); if(codes.includes(codeAt(uid, iso)) && !(doc.from && iso < doc.from)) out.push(d); } return out; };
   const dates = (uid, mo) => {   // dates du mois portant ce code (réel, sinon prévu) : pas d'infobulle pour les jours travaillés
     if(key==='JT') return '';
-    const doc = S.allDocs[uid] || emptyCycle(), out = [];
-    for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d), e = doc.reel[iso] || doc.prev[iso] || ''; if(codes.includes(e) && !(doc.from && iso < doc.from)) out.push(d); }
-    if(!out.length) return '';
+    const out = daysOf(uid, mo); if(!out.length) return '';
     const parts = []; for(let i=0; i<out.length; ){ let j = i; while(j+1 < out.length && out[j+1]===out[j]+1) j++; parts.push(j>i ? `du ${out[i]} au ${out[j]}` : `le ${out[i]}`); i = j+1; }
     return `${parts.length>1 ? parts.slice(0,-1).join(', ')+' et '+parts[parts.length-1] : parts[0]} ${MONTHS[mo.m].toLowerCase()}`;
   };
-  const body = rows.filter(r => r.started).map(r => `<tr><td class="name">${esc(nameOf(r.uid))}</td>${ms.map((mo,i) => {
-    const v = codes.reduce((t,k) => t + ((r.sum.per[k]||[])[i]||0), 0), a = Math.round(Math.min(1,v/mx)*70), tip = v ? dates(r.uid, mo) : '';
+  const people = rows.map(r => ({ uid:r.uid, per:r.started ? r.sum.per : null }));
+  if(S.isAdmin){   // collaborateurs hors forfait jours (émargement) : comptés depuis leurs horaires
+    Object.entries(S.hr).filter(([,h]) => h.role==='lecteur' && h.emarg && (S.showArchived ? h.actif===false : h.actif!==false))
+      .sort((a,b) => a[1].nom.localeCompare(b[1].nom,'fr')).forEach(([uid]) => people.push({ uid, per:null }));
+  }
+  const body = people.map(p => `<tr><td class="name">${esc(nameOf(p.uid))}</td>${ms.map((mo,i) => {
+    const v = p.per ? codes.reduce((t,k) => t + ((p.per[k]||[])[i]||0), 0) : (S.hr[p.uid] && S.hr[p.uid].role==='lecteur' ? daysOf(p.uid, mo).length : 0);
+    const a = Math.round(Math.min(1,v/mx)*70), tip = v ? dates(p.uid, mo) : '';
     return `<td ${tip ? `class="tip" tabindex="0" data-tip="${esc(tip)}"` : ''} style="background:color-mix(in srgb, var(--accent) ${a}%, transparent)">${v||'·'}</td>`; }).join('')}</tr>`).join('');
   if(!body) return '';
   return `<section class="card"><div class="row between"><h2>Vue mois par mois</h2>
