@@ -31,7 +31,7 @@ const S = {
   myCycle:{prev:{},reel:{},months:{}}, signing:null, dataAt:0, verCtx:null,
   tab:'me', mi:0, brush:'JT', layer:'prev',
   viewUid:null, draft:{}, loading:true, fatal:null, auth:{ mode:'login', step:1, email:'' },
-  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, emAll:{}, cp:{ list:[] }, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
+  em:{ rows:{}, vals:{}, loading:{}, day:null, sel:null }, hasEmarg:false, repasM:{}, emAll:{}, cp:{ list:[] }, adding:false, showArchived:false, confirmDel:null, fRest:'', fStatus:'', fQ:'', heat:'JT'
 };
 
 
@@ -78,7 +78,7 @@ function defaultMonthIndex(c){
   const ym = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`, ms = cycleMonths(c), i = ms.findIndex(x => x.ym===ym);
   return i>=0 ? i : (ym < ms[0].ym ? 0 : 11);
 }
-const emptyCycle = () => ({ prev:{}, reel:{}, repas:{}, months:{} });
+const emptyCycle = () => ({ prev:{}, reel:{}, months:{} });
 const normCycle = d => ({ prev:(d&&d.prev)||{}, reel:(d&&d.reel)||{}, months:(d&&d.months)||{} });
 
 // ---------- calculations
@@ -262,7 +262,7 @@ async function fetchPages(make){
 }
 function buildDocs(jours, vals){
   const docs = {}, get = id => docs[id] || (docs[id] = emptyCycle());
-  for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; if(r.repas) d.repas[r.jour]=r.repas; }
+  for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; }
   for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, equilibre:v.equilibre, charge:v.charge, comment:v.commentaire||'', reopened:v.reouvert_le, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
   return docs;
 }
@@ -283,7 +283,7 @@ async function loadData(){
     const [cols, qs, jours, vals] = await Promise.all([
       sb.from('collaborateurs').select('*').order('nom'),
       sb.from('quotas').select('*'),
-      fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel,repas').gte('jour',from).lte('jour',to).order('collaborateur_id').order('jour')),
+      fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').gte('jour',from).lte('jour',to).order('collaborateur_id').order('jour')),
       sb.from('validations').select('*').gte('mois',m0).lte('mois',m1)
     ]);
     for(const x of [cols, qs, vals]) if(x.error) throw x.error;
@@ -297,7 +297,7 @@ async function loadData(){
     if(S.hasOwn){
       const [qs, jours, vals] = await Promise.all([
         sb.from('quotas').select('*').eq('collaborateur_id', S.uid),
-        fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel,repas').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
+        fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
         sb.from('validations').select('*').eq('collaborateur_id', S.uid).gte('mois',m0).lte('mois',m1)
       ]);
       for(const x of [qs, vals]) if(x.error) throw x.error;
@@ -369,6 +369,7 @@ async function startSession(){
   S.tab = (!S.isAdmin && S.hasEmarg && !S.hasOwn) ? 'emarg' : (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
   if(S.hasOwn) loadHistory(S.uid).then(safeRender).catch(() => {});
   loadCp().then(safeRender).catch(() => {});
+  loadRepasM().then(safeRender).catch(() => {});
   bumpIdle();
 }
 async function logout(){ try { await sb.auth.signOut(); } finally { location.reload(); } }
@@ -607,27 +608,31 @@ function historyCard(h){
     ${list.map(c => { const e = cs[c]; return `<tr><td>${cycLabel(c)}</td><td class="r num">${nf(e.real||0)}</td><td class="r num">${nf(e.proj||0)}</td><td class="r num">${e.cp||0}</td><td class="r num">${e.rtt||0}</td><td class="r">${c===cyc()?'<span class="pill info">Affiché</span>':`<button class="btn small" data-act="goto-cycle" data-v="${c}">Ouvrir</button>`}</td></tr>`; }).join('')}
     </tbody></table></div></section>`;
 }
+const repasOf = (uid, ym) => ((S.repasM[uid]||{})[ym]) ?? '';
+async function loadRepasM(){
+  if(!(S.isAdmin || S.hasOwn || S.hasEmarg)) return;
+  const { data, error } = await sb.from('repas_mois').select('collaborateur_id,mois,repas');
+  if(error) throw error;
+  S.repasM = {}; for(const r of data) (S.repasM[r.collaborateur_id] = S.repasM[r.collaborateur_id] || {})[r.mois] = r.repas;
+}
+function repasMonthCard(uid, ro){
+  const mo = cycleMonths(cyc())[S.mi];
+  return `<section class="card" aria-labelledby="rp-h"><h3 id="rp-h">Repas · ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3>
+    <div class="field" style="max-width:240px;margin-top:10px"><label for="rpm">Nombre de repas du mois</label><input type="number" id="rpm" min="0" max="200" value="${esc(repasOf(uid, mo.ym))}" data-rpm="${esc(uid)}|${mo.ym}" ${ro?'disabled':''}></div></section>`;
+}
 function repasCard(ctx){
   if(!ctx.hr || !ctx.hr.repas) return '';
-  const c = cyc(), mo = cycleMonths(c)[S.mi], doc = ctx.doc, rec = doc.months[mo.ym] || {};
-  const ro = (!!rec.valide && !ctx.edit) || !S.canWrite || (ctx.readonly && !ctx.edit);
-  let total = 0, list = '';
-  for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){
-    const iso = isoOf(mo.y,mo.m,d), e = doc.reel[iso] || doc.prev[iso] || '', n = doc.repas[iso] || 0;
-    if(doc.from && iso < doc.from) continue;
-    if(e!=='JT' && !n) continue;
-    total += n;
-    list += `<div class="cprow" style="padding:6px 0"><span>${DOW[(new Date(mo.y,mo.m,d).getDay()+6)%7]} ${d}</span><input type="number" min="0" max="5" value="${n}" data-rp="${iso}" aria-label="Repas du ${d}" style="width:70px" ${ro?'disabled':''}></div>`;
-  }
-  return `<section class="card" aria-labelledby="rp-h"><div class="row between"><h3 id="rp-h">Repas · ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3><b>${total} repas</b></div>
-    <p class="muted" style="margin:6px 0 0">Indiquez le nombre de repas pour chaque jour travaillé.</p>${list || `<p class="muted" style="margin:10px 0 0">Aucun jour travaillé ce mois-ci.</p>`}</section>`;
+  const mo = cycleMonths(cyc())[S.mi], rec = ctx.doc.months[mo.ym] || {};
+  return repasMonthCard(ctx.uid, (!!rec.valide && !ctx.edit) || !S.canWrite || (ctx.readonly && !ctx.edit));
 }
-function setRepas(iso, n){
-  const T = tgt(), cur = S.allDocs[T.uid] || emptyCycle(), repas = { ...(cur.repas||{}) };
-  if(n) repas[iso] = n; else delete repas[iso];
-  const next = { ...cur, repas }; S.allDocs[T.uid] = next; if(T.uid===S.uid) S.myCycle = next;
-  render();
-  enqueue(async () => { await upsertChunks('jours', [{ collaborateur_id:T.uid, jour:iso, repas:n || null }], 'collaborateur_id,jour'); });
+function setRepasMois(uid, ym, n){
+  const m = (S.repasM[uid] = { ...(S.repasM[uid]||{}) });
+  if(n === null) delete m[ym]; else m[ym] = n;
+  enqueue(async () => {
+    if(n === null) await dbDo(sb.from('repas_mois').delete().eq('collaborateur_id',uid).eq('mois',ym));
+    else await upsertChunks('repas_mois', [{ collaborateur_id:uid, mois:ym, repas:n }], 'collaborateur_id,mois');
+    toast('Repas enregistrés.');
+  });
 }
 function employeeView(ctx){
   const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
@@ -804,7 +809,7 @@ function detailView(){
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
       <div style="grid-column:1/-1"><label class="row" style="gap:8px"><input type="checkbox" id="hr-emarg" style="width:auto" ${hr.emarg?'checked':''}><span><b>Suit son temps de travail (émargement des horaires)</b>, pour les collaborateurs hors forfait jours</span></label>
         <div class="field" style="margin-top:10px;max-width:360px"><label for="hr-valideur">Validateur des demandes de CP</label><select id="hr-valideur"><option value="">— (la DRH décide)</option>${Object.entries(S.hr).filter(([id,h]) => id!==uid && h.actif!==false).sort((a,b) => a[1].nom.localeCompare(b[1].nom,'fr')).map(([id,h]) => `<option value="${esc(id)}" ${hr.valideur===id?'selected':''}>${esc(h.nom)}</option>`).join('')}</select></div>
-        <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" id="hr-repas" style="width:auto" ${hr.repas?'checked':''}><span>Saisit le nombre de repas par jour</span></label>
+        <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" id="hr-repas" style="width:auto" ${hr.repas?'checked':''}><span>Saisit les repas du mois</span></label>
         <div class="htype"><b>Horaire type</b> <small class="muted">(les deux heures vides = jour de repos)</small>
           ${DOW.map((d,i) => { const x = (hr.htype && hr.htype[i+1]) || {}; return `<div class="hrow"><span>${d}</span><input type="time" id="ht-d-${i+1}" value="${esc(x.d||'')}" aria-label="Début ${d}"><input type="time" id="ht-f-${i+1}" value="${esc(x.f||'')}" aria-label="Fin ${d}"><input type="number" id="ht-p-${i+1}" min="0" max="240" value="${esc(x.p ?? '')}" placeholder="pause (min)" aria-label="Pause ${d}"></div>`; }).join('')}
           <button type="button" class="btn small" data-act="ht-copy">Copier le lundi sur mardi–vendredi</button></div></div>
@@ -844,11 +849,11 @@ function emEnsure(uid){
   S.em.loading[uid] = true;
   const { from, to } = cycleRange(cyc());
   Promise.all([
-    fetchPages(() => sb.from('emargements').select('jour,statut,debut,fin,pause_min,repas').eq('collaborateur_id',uid).gte('jour',from).lte('jour',to).order('jour')),
+    fetchPages(() => sb.from('emargements').select('jour,statut,debut,fin,pause_min').eq('collaborateur_id',uid).gte('jour',from).lte('jour',to).order('jour')),
     sb.from('emarg_validations').select('*').eq('collaborateur_id',uid)
   ]).then(([rows, vals]) => {
       if(vals.error) throw vals.error;
-      const m = {}; for(const r of rows) m[r.jour] = { statut:r.statut, debut:r.debut ? r.debut.slice(0,5) : '', fin:r.fin ? r.fin.slice(0,5) : '', pause:r.pause_min ?? 0, repas:r.repas ?? 0 };
+      const m = {}; for(const r of rows) m[r.jour] = { statut:r.statut, debut:r.debut ? r.debut.slice(0,5) : '', fin:r.fin ? r.fin.slice(0,5) : '', pause:r.pause_min ?? 0 };
       const v = {}; for(const x of vals.data) v[x.mois] = { valide:x.valide, at:x.signe_le, reopened:x.reouvert_le, hash:x.empreinte, sig:x.signature, visa:x.visa };
       S.em.rows[uid] = m; S.em.vals[uid] = v; })
     .catch(e => { toast(msg(e)); S.em.rows[uid] = {}; S.em.vals[uid] = {}; })
@@ -862,7 +867,7 @@ function emSet(uid, map){
   if(S.isAdmin){ const was = [...tm].filter(ym => vv[ym] && vv[ym].valide); for(const ym of was) vv[ym] = { valide:false, reopened:new Date().toISOString() }; if(was.length) toast('Validation du mois annulée : le collaborateur devra revalider.'); }
   render();
   enqueue(async () => {
-    const up = Object.entries(map).filter(([,r]) => r).map(([jour,r]) => ({ collaborateur_id:uid, jour, statut:r.statut, debut:r.debut||null, fin:r.fin||null, pause_min:r.statut==='TRAV' ? (r.pause||0) : null, repas:r.statut==='TRAV' ? (r.repas||0) : 0 }));
+    const up = Object.entries(map).filter(([,r]) => r).map(([jour,r]) => ({ collaborateur_id:uid, jour, statut:r.statut, debut:r.debut||null, fin:r.fin||null, pause_min:r.statut==='TRAV' ? (r.pause||0) : null }));
     const del = Object.entries(map).filter(([,r]) => !r).map(([jour]) => jour);
     if(up.length) await upsertChunks('emargements', up, 'collaborateur_id,jour');
     if(del.length) await dbDo(sb.from('emargements').delete().eq('collaborateur_id',uid).in('jour',del));
@@ -880,21 +885,21 @@ async function emVerify(){
 function emHr(uid){ return S.isAdmin ? (S.hr[uid] || {}) : (S.hasOwn && S.myHr ? S.myHr : { nom:S.me.name, fonction:(S.meRow||{}).fonction||'', restaurant:(S.meRow||{}).restaurant||'', n1:(S.meRow||{}).n1||'' }); }
 function emWeekTotals(rows){ const w = {}; for(const [iso,r] of Object.entries(rows)){ const d = parse(iso), k = `${d.getFullYear()}-${pad(isoWeek(d))}`; w[k] = (w[k]||0) + netMin(r); } return w; }
 function emRowsX(hr, rows, days){
-  const hol = holidays(cyc()), wr = emRepas(emUid()), out = [['Collaborateur','Date','Jour','Statut','Début','Fin','Pause (min)','Heures nettes','Observation', ...(wr ? ['Repas'] : [])]];
-  for(const d of days){ const iso = toIso(d), r = rows[iso]; out.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], r ? EM_STATUT[r.statut] : '', r&&r.statut==='TRAV' ? r.debut : '', r&&r.statut==='TRAV' ? r.fin : '', r&&r.statut==='TRAV' ? (r.pause||0) : '', r&&r.statut==='TRAV' ? Math.round(netMin(r)/60*100)/100 : '', hol[iso]||'', ...(wr ? [r&&r.statut==='TRAV' ? (r.repas||0) : ''] : [])]); }
+  const hol = holidays(cyc()), out = [['Collaborateur','Date','Jour','Statut','Début','Fin','Pause (min)','Heures nettes','Observation']];
+  for(const d of days){ const iso = toIso(d), r = rows[iso]; out.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], r ? EM_STATUT[r.statut] : '', r&&r.statut==='TRAV' ? r.debut : '', r&&r.statut==='TRAV' ? r.fin : '', r&&r.statut==='TRAV' ? (r.pause||0) : '', r&&r.statut==='TRAV' ? Math.round(netMin(r)/60*100)/100 : '', hol[iso]||'']); }
   return out;
 }
 function emReportMonth(uid, rows, hr, rec){
-  const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), wr = emRepas(uid); let total = 0, body = '', wk = 0, meals = 0;
+  const c = cyc(), mo = cycleMonths(c)[S.mi], hol = holidays(c), wr = emRepas(uid), rp = repasOf(uid, mo.ym); let total = 0, body = '', wk = 0;
   for(const d of monthDays(mo)){
-    const iso = toIso(d), r = rows[iso], n = netMin(r); total += n; wk += n; meals += (r && r.statut==='TRAV' ? (r.repas||0) : 0);
-    body += `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${r ? EM_STATUT[r.statut] : '—'}</td><td>${r&&r.statut==='TRAV' ? esc(r.debut) : ''}</td><td>${r&&r.statut==='TRAV' ? esc(r.fin) : ''}</td><td>${r&&r.statut==='TRAV' ? (r.pause||0)+' min' : ''}</td><td>${n ? hfmt(n) : ''}</td>${wr ? `<td>${r&&r.statut==='TRAV' ? (r.repas||0) : ''}</td>` : ''}<td>${esc(hol[iso]||'')}</td></tr>`;
-    if(d.getDay()===0 || d.getDate()===new Date(mo.y,mo.m+1,0).getDate()){ body += `<tr><td colspan="6"><b>Total semaine ${isoWeek(d)}</b></td><td><b>${hfmt(wk)}</b></td>${wr ? '<td></td>' : ''}<td></td></tr>`; wk = 0; }
+    const iso = toIso(d), r = rows[iso], n = netMin(r); total += n; wk += n;
+    body += `<tr><td>${fmtDate(iso)}</td><td>${DOWL[d.getDay()]}</td><td>${r ? EM_STATUT[r.statut] : '—'}</td><td>${r&&r.statut==='TRAV' ? esc(r.debut) : ''}</td><td>${r&&r.statut==='TRAV' ? esc(r.fin) : ''}</td><td>${r&&r.statut==='TRAV' ? (r.pause||0)+' min' : ''}</td><td>${n ? hfmt(n) : ''}</td><td>${esc(hol[iso]||'')}</td></tr>`;
+    if(d.getDay()===0 || d.getDate()===new Date(mo.y,mo.m+1,0).getDate()){ body += `<tr><td colspan="6"><b>Total semaine ${isoWeek(d)}</b></td><td><b>${hfmt(wk)}</b></td><td></td></tr>`; wk = 0; }
   }
   const sig = rec && rec.valide ? `<div class="sigs">${sigBox(rec.sig,'Salarié')}${sigBox(rec.visa,'Visa DRH / N+1')}</div>${rec.hash ? `<p><small>Empreinte SHA-256 : ${esc(rec.hash)}</small></p>` : ''}` : `<p>Mois non validé.</p>`;
   return reportHead(hr, `Émargement de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, 'Relevé des horaires de travail') +
-    `<table><thead><tr><th>Date</th><th>Jour</th><th>Statut</th><th>Début</th><th>Fin</th><th>Pause</th><th>Heures</th>${wr ? '<th>Repas</th>' : ''}<th>Observation</th></tr></thead><tbody>${body}</tbody></table>
-    <p><b>Total du mois :</b> ${hfmt(total)}${wr ? ` · <b>Repas :</b> ${meals}` : ''}</p>${sig}</div>`;
+    `<table><thead><tr><th>Date</th><th>Jour</th><th>Statut</th><th>Début</th><th>Fin</th><th>Pause</th><th>Heures</th><th>Observation</th></tr></thead><tbody>${body}</tbody></table>
+    <p><b>Total du mois :</b> ${hfmt(total)}${wr && rp!=='' ? ` · <b>Repas :</b> ${rp}` : ''}</p>${sig}</div>`;
 }
 function emDownload(kind){
   const uid = emUid(), rows = S.em.rows[uid]; if(!uid || !rows) return;
@@ -903,7 +908,7 @@ function emDownload(kind){
   else if(kind==='month-xlsx') saveBlob(`${base}-${mo.ym}.xlsx`, makeXlsx([{ name:'Horaires', rows:emRowsX(hr, rows, monthDays(mo)), widths:[26,22,14,20,8,8,12,14,24] }]));
   else if(kind==='cycle-xlsx'){
     const vals = S.em.vals[uid] || {}, wr = emRepas(uid), recap = [['Mois','Jours travaillés','Heures nettes','Validation', ...(wr ? ['Repas'] : [])]];
-    for(const m of cycleMonths(c)){ let t = 0, n = 0, ml = 0; for(const d of monthDays(m)){ const r = rows[toIso(d)], x = netMin(r); if(x){ t += x; n++; ml += (r.repas||0); } } const v = vals[m.ym]; recap.push([`${MONTHS[m.m]} ${m.y}`, n, Math.round(t/60*100)/100, v && v.valide ? 'Validé'+(v.visa?' · visé':'') : '', ...(wr ? [ml] : [])]); }
+    for(const m of cycleMonths(c)){ let t = 0, n = 0; const ml = repasOf(uid, m.ym); for(const d of monthDays(m)){ const r = rows[toIso(d)], x = netMin(r); if(x){ t += x; n++; } } const v = vals[m.ym]; recap.push([`${MONTHS[m.m]} ${m.y}`, n, Math.round(t/60*100)/100, v && v.valide ? 'Validé'+(v.visa?' · visé':'') : '', ...(wr ? [ml===''?'':ml] : [])]); }
     saveBlob(`${base}-${cycLabel(c)}.xlsx`, makeXlsx([{ name:'Récapitulatif', rows:recap, widths:[22,16,14,18] }, { name:'Horaires', rows:emRowsX(hr, rows, [...cycleDays(c)]), widths:[26,22,14,20,8,8,12,14,24] }]));
   }
 }
@@ -924,7 +929,7 @@ function emargView(){
   const first = new Date(mo.y,mo.m,1), lead = (first.getDay()+6)%7, dim = new Date(mo.y,mo.m+1,0).getDate(), weeks = Math.ceil((lead+dim)/7);
   const gapWarn = iso => { const r = rows[iso]; if(!r || r.statut!=='TRAV' || !r.debut) return false; const p = new Date(parse(iso)); p.setDate(p.getDate()-1); const q = rows[toIso(p)]; if(!q || q.statut!=='TRAV' || !q.fin) return false; let end = tmin(q.fin); if(end <= tmin(q.debut)) end += 1440; return (1440 + tmin(r.debut) - end) < 660; };
   const withR = emRepas(uid);
-  let cells = `<div></div>` + DOW.map(d => `<div class="hd">${d}</div>`).join(''), total = 0, worked = 0, meals = 0;
+  let cells = `<div></div>` + DOW.map(d => `<div class="hd">${d}</div>`).join(''), total = 0, worked = 0;
   for(let w=0; w<weeks; w++){
     const monday = new Date(mo.y,mo.m,1-lead+w*7); let wt = 0;
     for(let d=0; d<7; d++){ const x = new Date(monday); x.setDate(x.getDate()+d); wt += netMin(rows[toIso(x)]); }
@@ -933,8 +938,8 @@ function emargView(){
       const dt = new Date(mo.y,mo.m,1-lead+w*7+d);
       if(dt.getMonth()!==mo.m){ cells += `<div class="day blank"></div>`; continue; }
       const iso = toIso(dt), r = rows[iso], h = hol[iso], n = netMin(r);
-      if(n){ total += n; worked++; meals += (r.repas||0); }
-      const txt = r ? (r.statut==='TRAV' ? `${r.debut.replace(/^0/,'')}–${r.fin.replace(/^0/,'')}<br><b>${hfmt(n)}</b>${withR && r.repas ? `<br>${r.repas} repas` : ''}` : EM_STATUT[r.statut]) : '';
+      if(n){ total += n; worked++; }
+      const txt = r ? (r.statut==='TRAV' ? `${r.debut.replace(/^0/,'')}–${r.fin.replace(/^0/,'')}<br><b>${hfmt(n)}</b>` : EM_STATUT[r.statut]) : '';
       const warn = n > 600 || gapWarn(iso);
       const cls = ['day', d>=5?'we':'', h?'hol':'', iso===t?'today':'', iso===S.em.day?'sel':'', warn?'warn':''].filter(Boolean).join(' ');
       cells += `<button class="${cls}" data-act="em-day" data-v="${iso}" ${r?`data-code="${EM_CODE[r.statut]}"`:''} title="${esc(h || fmtDate(iso))}${n>600?' · plus de 10 h':''}${gapWarn(iso)?' · repos de moins de 11 h':''}"><span class="n">${dt.getDate()}</span><span class="c em">${txt}</span></button>`;
@@ -952,7 +957,6 @@ function emargView(){
         <div class="field"><label for="em-d">Début</label><input type="time" id="em-d" value="${esc(v.debut)}" ${ro?'disabled':''}></div>
         <div class="field"><label for="em-f">Fin</label><input type="time" id="em-f" value="${esc(v.fin)}" ${ro?'disabled':''}></div>
         <div class="field"><label for="em-p">Pause (minutes)</label><input type="number" id="em-p" min="0" max="600" value="${v.pause||0}" ${ro?'disabled':''}></div>
-        ${withR ? `<div class="field"><label for="em-r">Nombre de repas</label><input type="number" id="em-r" min="0" max="5" value="${v.repas||0}" ${ro?'disabled':''}></div>` : ''}
       </div>
       ${ro ? `<p class="note info" style="margin:12px 0 0">Mois validé : la saisie est verrouillée. Contactez la DRH pour une correction.</p><div class="row" style="margin-top:14px"><button class="btn small" data-act="em-close">Fermer</button></div>` : `<div class="row" style="margin-top:14px"><button class="btn primary" data-act="em-save">Enregistrer</button>${ty ? `<button class="btn small" data-act="em-type">Appliquer l'horaire type</button>` : ''}${r ? `<button class="btn small" data-act="em-clear">Effacer ce jour</button>` : ''}<button class="btn small" data-act="em-close">Fermer</button></div>`}
       <p class="muted" style="font-size:12px;margin:10px 0 0">Les heures de début et de fin ne servent que pour le statut « Travail ». Une fin avant le début est comptée sur la nuit.</p></section>`;
@@ -979,12 +983,12 @@ function emargView(){
       <h2 id="emc-h">Émargement · ${MONTHS[mo.m]} ${mo.y}</h2>
       <button class="icon-btn" data-act="month" data-v="1" aria-label="Mois suivant" ${S.mi===11?'disabled':''}>›</button>
     </div>
-    <p class="muted" style="margin:10px 0;text-align:center">Touchez un jour pour saisir vos horaires. Total du mois : <b>${hfmt(total)}</b> sur ${worked} jour(s) travaillé(s)${withR ? ` · <b>${meals}</b> repas` : ''}.</p>
+    <p class="muted" style="margin:10px 0;text-align:center">Touchez un jour pour saisir vos horaires. Total du mois : <b>${hfmt(total)}</b> sur ${worked} jour(s) travaillé(s).</p>
     <div class="cal">${cells}</div>
     <div class="row" style="margin-top:14px"><button class="btn small" data-act="em-fill" ${hasType?'':'disabled'}>Remplir les jours vides jusqu'à aujourd'hui avec l'horaire type</button></div>
     ${hasType ? '' : `<p class="muted" style="font-size:12px;margin:8px 0 0">Aucun horaire type n'est défini : la DRH peut le renseigner dans la fiche du collaborateur.</p>`}
     <p class="muted" style="font-size:12px;margin:8px 0 0">Un point rouge signale un jour de plus de 10 h ou un repos de moins de 11 h depuis la veille. Le total d'une semaine est en rouge au-dessus de 48 h.</p>
-  </section>${editor}${vcard}${dlcard}`;
+  </section>${editor}${withR ? repasMonthCard(uid, ro) : ''}${vcard}${dlcard}`;
 }
 
 // ---------- demandes de CP (le collaborateur demande, son validateur accepte ou refuse, les jours passent en CP)
@@ -1152,10 +1156,10 @@ function downloadCard(){
 const monthDays = mo => Array.from({length:new Date(mo.y,mo.m+1,0).getDate()}, (_,i) => new Date(mo.y,mo.m,i+1));
 const slug = t => String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'');
 function dayRowsX(hr, doc, days){
-  const hol = holidays(cyc()), wr = !!hr.repas, rows = [['Collaborateur','Date','Jour','Prévu','Réel','Retenu','Jour férié', ...(wr ? ['Repas'] : [])]];
+  const hol = holidays(cyc()), rows = [['Collaborateur','Date','Jour','Prévu','Réel','Retenu','Jour férié']];
   for(const d of days){
     const iso = toIso(d), p = doc.prev[iso]||'', r = doc.reel[iso]||'';
-    rows.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], p, r, r||p, hol[iso]||'', ...(wr ? [doc.repas && doc.repas[iso] || ''] : [])]);
+    rows.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], p, r, r||p, hol[iso]||'']);
   }
   return rows;
 }
@@ -1193,7 +1197,7 @@ function reportMonth(uid, doc, hr){
     : `<p>Mois non validé.</p>`;
   return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
     `<table><thead><tr><th>Date</th><th>Jour</th><th>Prévu</th><th>Réel</th><th>Observation</th></tr></thead><tbody>${rows}</tbody></table>
-    <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}${hr.repas ? ` · <b>Repas :</b> ${monthDays(mo).reduce((t,d) => t + ((doc.repas||{})[toIso(d)]||0), 0)}` : ''}</p>${sig}
+    <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}${hr.repas && repasOf(uid, mo.ym)!=='' ? ` · <b>Repas :</b> ${repasOf(uid, mo.ym)}` : ''}</p>${sig}
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
 }
 function reportCycle(uid, doc, hr){
@@ -1301,7 +1305,7 @@ $app.addEventListener('click', ev => {
     const htype = (S.isAdmin ? (S.hr[uid] && S.hr[uid].htype) : (S.meRow && S.meRow.horaire_type)) || {};
     if(act==='em-clear') emSet(uid, { [S.em.day]: null });
     else if(act==='em-save'){
-      const st = val('em-s'), r = { statut:st, debut: st==='TRAV' ? val('em-d') : '', fin: st==='TRAV' ? val('em-f') : '', pause: st==='TRAV' ? (Number(val('em-p'))||0) : 0, repas: (st==='TRAV' && document.getElementById('em-r')) ? (Number(val('em-r'))||0) : 0 };
+      const st = val('em-s'), r = { statut:st, debut: st==='TRAV' ? val('em-d') : '', fin: st==='TRAV' ? val('em-f') : '', pause: st==='TRAV' ? (Number(val('em-p'))||0) : 0 };
       if(st==='TRAV' && (!r.debut || !r.fin)){ toast("Indiquez l'heure de début et de fin."); return; }
       emSet(uid, { [S.em.day]: r }); toast('Journée enregistrée.');
     }
@@ -1463,7 +1467,7 @@ $app.addEventListener('input', ev => {
 });
 $app.addEventListener('change', ev => {
   const t = ev.target;
-  if(t.dataset.rp){ setRepas(t.dataset.rp, Math.max(0, Math.min(5, Math.round(Number(t.value)||0)))); }
+  if(t.dataset.rpm){ const [u, ym] = t.dataset.rpm.split('|'); setRepasMois(u, ym, t.value.trim()==='' ? null : Math.max(0, Math.min(200, Math.round(Number(t.value)||0)))); }
   else if(t.dataset.emsel!==undefined){ S.em.sel=t.value; S.em.day=null; render(); }
   else if(t.dataset.filter==='fRest'){ S.fRest=t.value; render(); }
   else if(t.dataset.filter==='fStatus'){ S.fStatus=t.value; render(); }
