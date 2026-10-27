@@ -15,7 +15,7 @@ const CODES = [
 ];
 const ARR = new Set(['AM','AT','ABS']);   // absences médicales : comptées dans le plafond selon le réglage
 const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Consultation + forfait jours (voit son niveau et ceux en dessous)', lecteur:'Consultation seule, sans forfait jours (voit son niveau et ceux en dessous)' };
-const NIVEAUX = { 1:'Niveau 1', 2:'Niveau 2 (Bureau)', 3:'Niveau 3', 4:'Niveau 4 (directeurs de restaurant)' };
+const NIVEAUX = { 1:'Niveau 1', 2:'Niveau 2 (Bureau)', 3:'Niveau 3', 4:'Niveau 4 (directeurs de restaurant)', 5:'Niveau 5 (adjoints)' };
 const CODE = Object.fromEntries(CODES.map(c => [c.k, c]));
 const REAL_CODES = CODES.filter(x => !x.view);
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
@@ -78,7 +78,7 @@ function defaultMonthIndex(c){
   const ym = `${nowD.getFullYear()}-${pad(nowD.getMonth()+1)}`, ms = cycleMonths(c), i = ms.findIndex(x => x.ym===ym);
   return i>=0 ? i : (ym < ms[0].ym ? 0 : 11);
 }
-const emptyCycle = () => ({ prev:{}, reel:{}, months:{} });
+const emptyCycle = () => ({ prev:{}, reel:{}, repas:{}, months:{} });
 const normCycle = d => ({ prev:(d&&d.prev)||{}, reel:(d&&d.reel)||{}, months:(d&&d.months)||{} });
 
 // ---------- calculations
@@ -262,13 +262,13 @@ async function fetchPages(make){
 }
 function buildDocs(jours, vals){
   const docs = {}, get = id => docs[id] || (docs[id] = emptyCycle());
-  for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; }
+  for(const r of jours){ const d = get(r.collaborateur_id); if(r.prevu) d.prev[r.jour]=r.prevu; if(r.reel) d.reel[r.jour]=r.reel; if(r.repas) d.repas[r.jour]=r.repas; }
   for(const v of vals) get(v.collaborateur_id).months[v.mois] = { valide:v.valide, r11:v.r11, r35:v.r35, equilibre:v.equilibre, charge:v.charge, comment:v.commentaire||'', reopened:v.reouvert_le, at:v.signe_le, hash:v.empreinte, sig:v.signature, visa:v.visa };
   return docs;
 }
 function buildHr(rows, quotas){
   const out = {};
-  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, emarg:!!r.emargement, repas:!!r.repas, valideur:r.valideur_id||'', htype:r.horaire_type||null, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
+  for(const r of rows) out[r.id] = { id:r.id, email:r.email||'', nom:r.nom, role:r.role, emarg:!!r.emargement, repas:!!r.repas, valideur:r.valideur_id||'', htype:r.horaire_type||null, niveau:r.niveau||4, actif:r.actif, fonction:r.fonction||'', categorie:r.categorie||'', restaurant:r.restaurant||'', entree:r.date_entree||'', sortie:r.date_sortie||'', n1:r.n1||'', entretien:r.entretien||'', cycles:{} };
   for(const q of quotas) if(out[q.collaborateur_id]) out[q.collaborateur_id].cycles[q.cycle] = { plafond:q.plafond, cp:q.cp, rtt:q.rtt, cpa:q.cp_anticipe };
   return out;
 }
@@ -279,10 +279,11 @@ async function loadSettings(){
 async function loadData(){
   const c = cyc(), { from, to } = cycleRange(c), ms = cycleMonths(c), m0 = ms[0].ym, m1 = ms[11].ym;
   if(S.isAdmin){
+    try { await sb.rpc('appliquer_sorties'); } catch(e){}   // retire les collaborateurs dont la date de sortie est passée
     const [cols, qs, jours, vals] = await Promise.all([
       sb.from('collaborateurs').select('*').order('nom'),
       sb.from('quotas').select('*'),
-      fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').gte('jour',from).lte('jour',to).order('collaborateur_id').order('jour')),
+      fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel,repas').gte('jour',from).lte('jour',to).order('collaborateur_id').order('jour')),
       sb.from('validations').select('*').gte('mois',m0).lte('mois',m1)
     ]);
     for(const x of [cols, qs, vals]) if(x.error) throw x.error;
@@ -296,7 +297,7 @@ async function loadData(){
     if(S.hasOwn){
       const [qs, jours, vals] = await Promise.all([
         sb.from('quotas').select('*').eq('collaborateur_id', S.uid),
-        fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
+        fetchPages(() => sb.from('jours').select('collaborateur_id,jour,prevu,reel,repas').eq('collaborateur_id',S.uid).gte('jour',from).lte('jour',to).order('jour')),
         sb.from('validations').select('*').eq('collaborateur_id', S.uid).gte('mois',m0).lte('mois',m1)
       ]);
       for(const x of [qs, vals]) if(x.error) throw x.error;
@@ -362,7 +363,7 @@ async function startSession(){
   const { data:me, error } = await sb.from('collaborateurs').select('*').eq('user_id', session.user.id).maybeSingle();
   if(error){ S.fatal = 'error'; S.loading = false; render(); return; }
   if(!me || !me.actif){ S.session = session; S.fatal = 'unregistered'; S.loading = false; render(); return; }
-  S.session = session; S.meRow = me; S.uid = me.id; S.role = me.role; S.isAdmin = me.role === 'admin'; S.consult = me.role === 'superviseur' || me.role === 'lecteur'; S.hasOwn = me.role !== 'lecteur'; S.hasEmarg = !!me.emargement; S.me = { name:me.nom, email:me.email };
+  S.session = session; S.meRow = me; S.uid = me.id; S.role = me.role; S.isAdmin = me.role === 'admin'; S.consult = me.role === 'superviseur' || me.role === 'lecteur' || (me.role === 'employe' && me.niveau === 4); S.hasOwn = me.role !== 'lecteur'; S.hasEmarg = !!me.emargement; S.me = { name:me.nom, email:me.email };
   await loadSettings(); S.cycle = S.settings.cycle; S.mi = defaultMonthIndex(S.cycle);
   await loadData();
   S.tab = (!S.isAdmin && S.hasEmarg && !S.hasOwn) ? 'emarg' : (S.isAdmin || !S.hasOwn) ? 'team' : 'me'; S.loading = false; render();
@@ -606,12 +607,34 @@ function historyCard(h){
     ${list.map(c => { const e = cs[c]; return `<tr><td>${cycLabel(c)}</td><td class="r num">${nf(e.real||0)}</td><td class="r num">${nf(e.proj||0)}</td><td class="r num">${e.cp||0}</td><td class="r num">${e.rtt||0}</td><td class="r">${c===cyc()?'<span class="pill info">Affiché</span>':`<button class="btn small" data-act="goto-cycle" data-v="${c}">Ouvrir</button>`}</td></tr>`; }).join('')}
     </tbody></table></div></section>`;
 }
+function repasCard(ctx){
+  if(!ctx.hr || !ctx.hr.repas) return '';
+  const c = cyc(), mo = cycleMonths(c)[S.mi], doc = ctx.doc, rec = doc.months[mo.ym] || {};
+  const ro = (!!rec.valide && !ctx.edit) || !S.canWrite || (ctx.readonly && !ctx.edit);
+  let total = 0, list = '';
+  for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){
+    const iso = isoOf(mo.y,mo.m,d), e = doc.reel[iso] || doc.prev[iso] || '', n = doc.repas[iso] || 0;
+    if(doc.from && iso < doc.from) continue;
+    if(e!=='JT' && !n) continue;
+    total += n;
+    list += `<div class="cprow" style="padding:6px 0"><span>${DOW[(new Date(mo.y,mo.m,d).getDay()+6)%7]} ${d}</span><input type="number" min="0" max="5" value="${n}" data-rp="${iso}" aria-label="Repas du ${d}" style="width:70px" ${ro?'disabled':''}></div>`;
+  }
+  return `<section class="card" aria-labelledby="rp-h"><div class="row between"><h3 id="rp-h">Repas · ${MONTHS[mo.m].toLowerCase()} ${mo.y}</h3><b>${total} repas</b></div>
+    <p class="muted" style="margin:6px 0 0">Indiquez le nombre de repas pour chaque jour travaillé.</p>${list || `<p class="muted" style="margin:10px 0 0">Aucun jour travaillé ce mois-ci.</p>`}</section>`;
+}
+function setRepas(iso, n){
+  const T = tgt(), cur = S.allDocs[T.uid] || emptyCycle(), repas = { ...(cur.repas||{}) };
+  if(n) repas[iso] = n; else delete repas[iso];
+  const next = { ...cur, repas }; S.allDocs[T.uid] = next; if(T.uid===S.uid) S.myCycle = next;
+  render();
+  enqueue(async () => { await upsertChunks('jours', [{ collaborateur_id:T.uid, jour:iso, repas:n || null }], 'collaborateur_id,jour'); });
+}
 function employeeView(ctx){
   const c = cyc(), al = alloc(ctx.hr), sum = summarize(ctx.doc, c), pj = projectCycle(ctx.doc, c, al, sum), m = metrics(sum, al, pj), consult = !!ctx.consult;
   S.verCtx = { uid:ctx.uid, doc:ctx.doc };
   return `<div class="grid2">
     <div class="stack">${summaryCard(sum, al, m, pj)}${projectionCard(sum, al, m, pj)}${consult ? '' : interviewCard(ctx.hr)}${monthsChart(pj, sum.coded < sum.min)}${historyCard(S.history[ctx.uid])}</div>
-    <div class="stack">${calendarCard(ctx)}${consult ? '' : validationCard(ctx)}${consult ? '' : downloadCard()}</div></div>`;
+    <div class="stack">${calendarCard(ctx)}${consult ? '' : repasCard(ctx)}${consult ? '' : validationCard(ctx)}${consult ? '' : downloadCard()}</div></div>`;
 }
 
 
@@ -777,10 +800,11 @@ function detailView(){
       ${hr.role==='lecteur' ? '' : f('hr-cpa',`CP par anticipation · cycle ${cycLabel(c)} (affiché seulement si 1 ou plus)`,a.cpa ?? '','number','min="0" max="30"')}
       ${hr.role==='lecteur' ? '' : f('hr-rtt',`RTT à prendre · cycle ${cycLabel(c)}`,a.rtt ?? '','number',`min="0" max="30" placeholder="${S.settings.rtt}"`)}
       ${f('hr-entree',"Date d'entrée (si arrivée en cours de cycle)",hr.entree||'','date')}
+      ${f('hr-sortie',"Date de sortie (la personne est retirée du suivi le lendemain)",hr.sortie||'','date')}
       ${f('hr-entretien','Dernier entretien annuel',hr.entretien||'','date')}
       <div style="grid-column:1/-1"><label class="row" style="gap:8px"><input type="checkbox" id="hr-emarg" style="width:auto" ${hr.emarg?'checked':''}><span><b>Suit son temps de travail (émargement des horaires)</b>, pour les collaborateurs hors forfait jours</span></label>
-        <div class="field" style="margin-top:10px;max-width:360px"><label for="hr-valideur">Validateur des demandes de CP</label><select id="hr-valideur"><option value="">— (la DRH décide)</option>${Object.entries(S.hr).filter(([id,h]) => id!==uid && h.actif!==false && ['admin','superviseur','lecteur'].includes(h.role)).sort((a,b) => a[1].nom.localeCompare(b[1].nom,'fr')).map(([id,h]) => `<option value="${esc(id)}" ${hr.valideur===id?'selected':''}>${esc(h.nom)}</option>`).join('')}</select></div>
-        <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" id="hr-repas" style="width:auto" ${hr.repas?'checked':''}><span>Saisit le nombre de repas par jour (superviseurs)</span></label>
+        <div class="field" style="margin-top:10px;max-width:360px"><label for="hr-valideur">Validateur des demandes de CP</label><select id="hr-valideur"><option value="">— (la DRH décide)</option>${Object.entries(S.hr).filter(([id,h]) => id!==uid && h.actif!==false).sort((a,b) => a[1].nom.localeCompare(b[1].nom,'fr')).map(([id,h]) => `<option value="${esc(id)}" ${hr.valideur===id?'selected':''}>${esc(h.nom)}</option>`).join('')}</select></div>
+        <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" id="hr-repas" style="width:auto" ${hr.repas?'checked':''}><span>Saisit le nombre de repas par jour</span></label>
         <div class="htype"><b>Horaire type</b> <small class="muted">(les deux heures vides = jour de repos)</small>
           ${DOW.map((d,i) => { const x = (hr.htype && hr.htype[i+1]) || {}; return `<div class="hrow"><span>${d}</span><input type="time" id="ht-d-${i+1}" value="${esc(x.d||'')}" aria-label="Début ${d}"><input type="time" id="ht-f-${i+1}" value="${esc(x.f||'')}" aria-label="Fin ${d}"><input type="number" id="ht-p-${i+1}" min="0" max="240" value="${esc(x.p ?? '')}" placeholder="pause (min)" aria-label="Pause ${d}"></div>`; }).join('')}
           <button type="button" class="btn small" data-act="ht-copy">Copier le lundi sur mardi–vendredi</button></div></div>
@@ -1128,10 +1152,10 @@ function downloadCard(){
 const monthDays = mo => Array.from({length:new Date(mo.y,mo.m+1,0).getDate()}, (_,i) => new Date(mo.y,mo.m,i+1));
 const slug = t => String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'');
 function dayRowsX(hr, doc, days){
-  const hol = holidays(cyc()), rows = [['Collaborateur','Date','Jour','Prévu','Réel','Retenu','Jour férié']];
+  const hol = holidays(cyc()), wr = !!hr.repas, rows = [['Collaborateur','Date','Jour','Prévu','Réel','Retenu','Jour férié', ...(wr ? ['Repas'] : [])]];
   for(const d of days){
     const iso = toIso(d), p = doc.prev[iso]||'', r = doc.reel[iso]||'';
-    rows.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], p, r, r||p, hol[iso]||'']);
+    rows.push([hr.nom, fmtDate(iso), DOWL[d.getDay()], p, r, r||p, hol[iso]||'', ...(wr ? [doc.repas && doc.repas[iso] || ''] : [])]);
   }
   return rows;
 }
@@ -1169,7 +1193,7 @@ function reportMonth(uid, doc, hr){
     : `<p>Mois non validé.</p>`;
   return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
     `<table><thead><tr><th>Date</th><th>Jour</th><th>Prévu</th><th>Réel</th><th>Observation</th></tr></thead><tbody>${rows}</tbody></table>
-    <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}</p>${sig}
+    <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}${hr.repas ? ` · <b>Repas :</b> ${monthDays(mo).reduce((t,d) => t + ((doc.repas||{})[toIso(d)]||0), 0)}` : ''}</p>${sig}
     <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
 }
 function reportCycle(uid, doc, hr){
@@ -1393,16 +1417,16 @@ $app.addEventListener('click', ev => {
   }
   else if(act==='save-hr'){
     const uid = S.viewUid;
-    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, emargement:document.getElementById('hr-emarg').checked, repas:document.getElementById('hr-repas').checked, valideur_id:document.getElementById('hr-valideur').value || null, horaire_type:readHtype(), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null };
+    const row = { nom:val('hr-nom'), email:emailOrNull('hr-email'), fonction:val('hr-fonction'), categorie:val('hr-categorie')||null, restaurant:val('hr-restaurant'), n1:val('hr-n1'), role:val('hr-role'), niveau:Number(val('hr-niveau'))||4, emargement:document.getElementById('hr-emarg').checked, repas:document.getElementById('hr-repas').checked, valideur_id:document.getElementById('hr-valideur').value || null, horaire_type:readHtype(), entretien:val('hr-entretien')||null, date_entree:val('hr-entree')||null, date_sortie:val('hr-sortie')||null };
     if(!row.nom){ toast('Le nom est obligatoire.'); return; }
     if(uid===S.uid && row.role!=='admin'){ toast('Vous ne pouvez pas retirer vos propres droits d\'administrateur.'); return; }
     const q = { collaborateur_id:uid, cycle:c, plafond:numOrNull('hr-plafond'), cp:numOrNull('hr-cp'), rtt:numOrNull('hr-rtt'), cp_anticipe:numOrNull('hr-cpa') };
-    enqueue(async () => { await dbDo(sb.from('collaborateurs').update(row).eq('id',uid)); if(row.role!=='lecteur') await upsertChunks('quotas',[q],'collaborateur_id,cycle'); await loadData(); render(); toast('Fiche enregistrée.'); });
+    enqueue(async () => { await dbDo(sb.from('collaborateurs').update(row).eq('id',uid)); if(row.date_sortie && row.date_sortie < todayIso()){ await sb.rpc('appliquer_sorties'); toast('Date de sortie dépassée : la personne est retirée du suivi.'); } if(row.role!=='lecteur') await upsertChunks('quotas',[q],'collaborateur_id,cycle'); await loadData(); render(); toast('Fiche enregistrée.'); });
   }
   else if(act==='archive' || act==='restore'){
     const uid = S.viewUid;
     if(uid===S.uid){ toast('Vous ne pouvez pas vous retirer vous-même.'); return; }
-    enqueue(async () => { await dbDo(sb.from('collaborateurs').update({ actif: act==='restore' }).eq('id',uid)); await loadData(); S.viewUid = act==='archive' ? null : uid; render(); toast(act==='restore' ? 'Collaborateur réintégré.' : 'Collaborateur retiré du suivi.'); });
+    enqueue(async () => { await dbDo(sb.from('collaborateurs').update(act==='restore' ? { actif:true, date_sortie:null } : { actif:false }).eq('id',uid)); await loadData(); S.viewUid = act==='archive' ? null : uid; render(); toast(act==='restore' ? 'Collaborateur réintégré.' : 'Collaborateur retiré du suivi.'); });
   }
   else if(act==='delete-ask'){ S.confirmDel=S.viewUid; render(); }
   else if(act==='delete-cancel'){ S.confirmDel=null; render(); }
@@ -1439,7 +1463,8 @@ $app.addEventListener('input', ev => {
 });
 $app.addEventListener('change', ev => {
   const t = ev.target;
-  if(t.dataset.emsel!==undefined){ S.em.sel=t.value; S.em.day=null; render(); }
+  if(t.dataset.rp){ setRepas(t.dataset.rp, Math.max(0, Math.min(5, Math.round(Number(t.value)||0)))); }
+  else if(t.dataset.emsel!==undefined){ S.em.sel=t.value; S.em.day=null; render(); }
   else if(t.dataset.filter==='fRest'){ S.fRest=t.value; render(); }
   else if(t.dataset.filter==='fStatus'){ S.fStatus=t.value; render(); }
   else if(t.dataset.filter==='showArchived'){ S.showArchived=t.value==='1'; render(); }
