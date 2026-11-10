@@ -238,7 +238,18 @@ async function verifyIntegrity(){
 const fromLink = /(^|[#&])access_token=/.test(location.hash);   // arrivée par le lien reçu par e-mail
 let pendingPwd = fromLink;
 const ready = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && window.supabase);
-const sb = ready ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }) : null;
+// Mode « intégré » (?embed=1) : l'application est affichée DANS la page de saisie / du dashboard de la franchise. Elle reçoit la session de la page (jeton d'accès par postMessage, même origine)
+// et ne la renouvelle ni ne la ferme elle-même : la page parente est la seule à gérer la connexion (jamais de mot de passe à retaper, jamais de déconnexion croisée).
+const EMBED = (() => { try { return new URLSearchParams(location.search).get('embed') === '1' && window.parent !== window; } catch(e){ return false; } })();
+if(EMBED){ document.body.classList.add('embed'); const st = document.createElement('style'); st.textContent = 'body.embed [data-act="logout"]{display:none !important}'; document.head.appendChild(st); }
+const embedMsg = m => { try { window.parent.postMessage(m, location.origin); } catch(e){} };
+function embedToken(timeout){
+  return new Promise(res => {
+    let done = false; const h = ev => { if(ev.origin !== location.origin || ev.source !== window.parent) return; const m = ev.data || {}; if(m.type === 'forfait-session' && m.access_token){ done = true; window.removeEventListener('message', h); res(m.access_token); } };
+    window.addEventListener('message', h); embedMsg({ type:'forfait-ready' }); setTimeout(() => { if(!done){ window.removeEventListener('message', h); res(null); } }, timeout || 8000);
+  });
+}
+const sb = ready ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, { auth: EMBED ? { persistSession:false, autoRefreshToken:false, detectSessionInUrl:false } : { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }) : null;
 const msg = e => {
   const m = (e && e.message) || '';
   if(/Invalid login credentials/i.test(m)) return 'Adresse e-mail ou mot de passe incorrect.';
@@ -356,6 +367,7 @@ async function dbDo(q){ const { error } = await q; if(error) throw error; }
 // ---------- authentification
 const authMsg = (t, ok) => { const el = document.getElementById('auth-msg'); if(el){ el.textContent = t; el.className = 'note' + (ok ? ' info' : ''); el.hidden = !t; } };
 async function startSession(){
+  if(EMBED){ const t = await embedToken(); if(t){ try { await sb.auth.setSession({ access_token:t, refresh_token:'embedded' }); } catch(e){ console.error(e); } } }       // intégré : la session vient de la page parente
   const { data:{ session } } = await sb.auth.getSession();
   if(!session){ S.session = null; S.loading = false; render(); return; }
   if(pendingPwd){ history.replaceState(null, '', location.pathname + location.search); S.auth = { mode:'code', step:3, email:(session.user && session.user.email) || '' }; S.loading = false; render(); return; }
@@ -372,7 +384,7 @@ async function startSession(){
   loadRepasM().then(safeRender).catch(() => {});
   bumpIdle();
 }
-async function logout(){ try { await sb.auth.signOut(); } finally { location.reload(); } }
+async function logout(){ if(EMBED){ embedMsg({ type:'forfait-logout' }); return; } try { await sb.auth.signOut(); } finally { location.reload(); } }      // intégré : la déconnexion appartient à la page parente
 let idleT;
 function bumpIdle(){ clearTimeout(idleT); if(S.session) idleT = setTimeout(logout, 30*60*1000); }   // déconnexion après 30 min d'inactivité
 ['click','keydown','pointerdown'].forEach(ev => document.addEventListener(ev, bumpIdle, { passive:true }));
@@ -1480,6 +1492,7 @@ $app.addEventListener('change', ev => {
 render();
 if(ready){
   sb.auth.onAuthStateChange(ev => { if(ev==='SIGNED_OUT' && S.session) location.reload(); });
+  if(EMBED){ window.addEventListener('message', async ev => { if(ev.origin !== location.origin || ev.source !== window.parent) return; const m = ev.data || {}; if(m.type === 'forfait-session' && m.access_token && S.session){ try { await sb.auth.setSession({ access_token:m.access_token, refresh_token:'embedded' }); } catch(e){} } }); }       // jeton renouvelé par la page parente
   startSession().catch(e => { console.error(e); S.fatal='error'; S.loading=false; render(); });
 } else { S.loading = false; render(); }
 })();
