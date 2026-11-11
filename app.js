@@ -5,6 +5,7 @@ const curCycle = () => nowD.getMonth() >= 5 ? nowD.getFullYear() : nowD.getFullY
 const DEF = { cycle: curCycle(), plafond: 218, cp: 30, rtt: 11, preavis: 60, arretCompte: true };
 const CODES = [
   { k:'JT',  label:'Jour travaillé' },
+  { k:'JS',  label:'Journée de solidarité' },   // jaune ; compte comme un jour travaillé (elle est comprise dans les 218 jours)
   { k:'OFF', label:'Jour OFF' },
   { k:'RTT', label:'RTT' },
   { k:'CP',  label:'Congé payé' },
@@ -13,6 +14,7 @@ const CODES = [
   { k:'AT',  label:'Accident du travail' },
   { k:'ABS', label:'Absence', view:true }   // affiché uniquement aux profils de consultation (AM/AT masqués)
 ];
+const cjs = x => x === 'JS' ? 'JT' : (x||'');   // pour les calculs, la journée de solidarité est un jour travaillé
 const ARR = new Set(['AM','AT','ABS']);   // absences médicales : comptées dans le plafond selon le réglage
 const ROLES = { employe:'Salarié', admin:'Administrateur (DRH)', superviseur:'Consultation + forfait jours (voit son niveau et ceux en dessous)', lecteur:'Consultation seule, sans forfait jours (voit son niveau et ceux en dessous)' };
 const NIVEAUX = { 1:'Niveau 1', 2:'Niveau 2 (Bureau)', 3:'Niveau 3', 4:'Niveau 4 (directeurs de restaurant)', 5:'Niveau 5 (adjoints)' };
@@ -87,13 +89,13 @@ function summarize(doc, c){
   const ms = cycleMonths(c), idx = {}; ms.forEach((mo,i) => idx[mo.ym]=i);
   const per = { JT:Array(12).fill(0), CP:Array(12).fill(0), RTT:Array(12).fill(0), OFF:Array(12).fill(0), AM:Array(12).fill(0), AT:Array(12).fill(0), ABS:Array(12).fill(0) };
   const n = { JT:0, CP:0, RTT:0, OFF:0, JF:0, AM:0, AT:0, ABS:0 };
-  let blank=0, coded=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0;
+  let blank=0, coded=0, real=0, proj=0, streak=0, max=0, last=null, jfw=0, rttRun=0, maxRtt=0, js=0;
   const hol = holidays(c);
   for(const d of cycleDays(c)){
-    const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '';
+    const iso = toIso(d), r = cjs(reel[iso]), e = r || cjs(prev[iso]);
     if(from && iso < from){ last=null; streak=0; rttRun=0; continue; }
     if(!e){ blank++; last=null; streak=0; rttRun=0; continue; }
-    n[e]++; coded++;
+    n[e]++; coded++; if((reel[iso]||prev[iso])==='JS') js++;
     if(e==='RTT'){ rttRun++; maxRtt = Math.max(maxRtt, rttRun); } else if(e!=='OFF' && e!=='JF'){ rttRun = 0; }
     const i = idx[iso.slice(0,7)];
     if(per[e] && e!=='JT') per[e][i]++;
@@ -113,7 +115,7 @@ function summarize(doc, c){
     if(m.r11===false || m.r35===false || m.equilibre===false || (m.charge && m.charge!=='ok')) issues.push(ym);
   }
   const minCoded = from ? Math.max(7, Math.round(30*(dayDiff(from, cycleRange(c).to)+1)/365)) : MIN_CODED;
-  return { min:minCoded, proj, real, jt:n.JT, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
+  return { min:minCoded, proj, real, jt:n.JT, js, jfw, cp:n.CP, rtt:n.RTT, off:n.OFF, jf:n.JF, am:n.AM, at:n.AT, blank, coded, maxStreak:max, maxRtt, per, validated:validated.sort(), issues:issues.sort() };
 }
 // Part du cycle effectivement présente (arrivée en cours de cycle) : sert à proratiser les quotas par défaut.
 function presence(hr, c){
@@ -135,7 +137,7 @@ function projectCycle(doc, c, al, sum){
   const endIso = cur >= 0 ? ms[cur].ym + '-31' : '0000-00-00';
   let planned = 0, est = 0, rttUsed = 0, cpSummer = 0; const rttPer = Array(12).fill(0); const perP = Array(12).fill(0), perE = Array(12).fill(0);
   for(const d of cycleDays(c)){
-    const iso = toIso(d), r = reel[iso]||'', e = r || prev[iso] || '', i = idx[iso.slice(0,7)];
+    const iso = toIso(d), r = cjs(reel[iso]), e = r || cjs(prev[iso]), i = idx[iso.slice(0,7)];
     if(from && iso < from) continue;
     if(e){
       if((e==='JT' && !hol[iso]) || (S.settings.arretCompte && ARR.has(r))){ planned++; perP[i]++; }
@@ -710,7 +712,7 @@ function addPanel(){
 }
 
 function heatTable(rows){
-  const ms = cycleMonths(cyc()), key = S.heat, mx = key==='JT' ? 31 : 12, codes = key==='AM' ? ['AM','AT','ABS'] : [key];
+  const ms = cycleMonths(cyc()), key = S.heat, mx = key==='JT' ? 31 : 12, codes = key==='AM' ? ['AM','AT','ABS'] : key==='JT' ? ['JT','JS'] : [key];
   const EMC = { TRAV:'JT', REPOS:'OFF', CP:'CP', AM:'AM', AT:'AT', JF:'JF' };
   const codeAt = (uid, iso) => { const em = S.emAll[uid]; if(em && S.hr[uid] && S.hr[uid].role==='lecteur') return EMC[em[iso]] || ''; const doc = S.allDocs[uid] || emptyCycle(); return (doc.reel[iso] || doc.prev[iso] || ''); };
   const daysOf = (uid, mo) => { const doc = S.allDocs[uid] || emptyCycle(), out = []; for(let d=1; d<=new Date(mo.y,mo.m+1,0).getDate(); d++){ const iso = isoOf(mo.y,mo.m,d); if(codes.includes(codeAt(uid, iso)) && !(doc.from && iso < doc.from)) out.push(d); } return out; };
@@ -1180,7 +1182,7 @@ function recapRowsX(hr, doc){
   const rows = [['Mois', ...REAL_CODES.map(x => x.k), 'Fériés travaillés', 'Non planifiés', 'Validation']];
   for(const mo of cycleMonths(c)){
     const t = {}; let blank = 0, jfw = 0;
-    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if((e==='JT'||e==='JS') && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
     rows.push([`${MONTHS[mo.m]} ${mo.y}`, ...REAL_CODES.map(x => t[x.k]||0), jfw, blank, rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '']);
   }
@@ -1210,13 +1212,13 @@ function reportMonth(uid, doc, hr){
   return reportHead(hr, `Relevé de ${MONTHS[mo.m].toLowerCase()} ${mo.y}`, `Forfait annuel en jours · cycle ${cycLabel(c)}`) +
     `<table><thead><tr><th>Date</th><th>Jour</th><th>Prévu</th><th>Réel</th><th>Observation</th></tr></thead><tbody>${rows}</tbody></table>
     <p><b>Total retenu (réel, sinon prévu) :</b> ${CODES.map(x => tally[x.k] ? `${x.k} ${tally[x.k]}` : '').filter(Boolean).join(' · ') || 'aucun jour saisi'}${hr.repas && repasOf(uid, mo.ym)!=='' ? ` · <b>Repas :</b> ${repasOf(uid, mo.ym)}` : ''}</p>${sig}
-    <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
+    <p><small>JT jour travaillé · JS journée de solidarité · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Un férié travaillé est payé et ne compte pas dans le plafond.</small></p></div>`;
 }
 function reportCycle(uid, doc, hr){
   const c = cyc(), al = alloc(hr), sum = summarize(doc, c), pj = projectCycle(doc, c, al, sum), m = metrics(sum, al, pj), ms = cycleMonths(c), hol = holidays(c);
   const tot = {}; let totJfw = 0, totBlank = 0;
   const rows = ms.map(mo => { const t = {}; let blank = 0, jfw = 0;
-    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if(e==='JT' && hol[iso]) jfw++; }
+    for(const d of monthDays(mo)){ const iso = toIso(d), e = doc.reel[iso]||doc.prev[iso]; if(!e){ if(!(doc.from && iso < doc.from)) blank++; continue; } t[e] = (t[e]||0)+1; if((e==='JT'||e==='JS') && hol[iso]) jfw++; }
     const rec = doc.months[mo.ym] || {};
     for(const x of REAL_CODES) tot[x.k] = (tot[x.k]||0) + (t[x.k]||0); totJfw += jfw; totBlank += blank;
     return `<tr><td>${MONTHS[mo.m]} ${mo.y}</td>${REAL_CODES.map(x => `<td>${t[x.k]||0}</td>`).join('')}<td>${jfw}</td><td>${blank}</td><td>${rec.valide ? 'Validé'+(rec.visa?' · visé':'') : '—'}</td></tr>`; }).join('') +
@@ -1227,7 +1229,7 @@ function reportCycle(uid, doc, hr){
     <b>Projection du cycle complet, au rythme normal (CP et RTT pris) :</b> ${pj.withRtt} jours (${m.reste>=0?'marge '+nf(m.reste):'excédent '+nf(-m.reste)} par rapport à ${al.plafond}) · ${pj.noRtt} jours si les ${pj.rttLeft} RTT restants ne sont pas pris.<br>
     <b>Quotas :</b> CP ${sum.cp} / ${al.cp}${al.cpa >= 1 ? ` (dont ${al.cpa} par anticipation)` : ''} · RTT ${sum.rtt} / ${al.rtt}. Fériés travaillés déduits : ${sum.jfw}.</p>
     <p><b>Totaux du cycle :</b> ${REAL_CODES.map(x => `${x.k} ${tot[x.k]||0}`).join(' · ')}.</p>
-    <p><small>JT jour travaillé · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p>
+    <p><small>JT jour travaillé · JS journée de solidarité · OFF repos · RTT · CP congé payé · JF férié · AM arrêt maladie · AT accident du travail. Décompte sur le réel, à défaut le prévu.</small></p>
     <div class="sigframes"><div class="sigframe"><b>Signature du salarié</b><span>Nom, date et signature</span></div><div class="sigframe"><b>Signature du responsable</b><span>Nom, date et signature</span></div></div></div>`;
 }
 function printReport(html){
